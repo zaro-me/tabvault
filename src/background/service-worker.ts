@@ -1,0 +1,542 @@
+import { v4 as uuidv4 } from 'uuid';
+import * as tracker from './idle-tracker';
+import * as db from '@/shared/storage';
+import { assignGroups, assignNewTab, extractDomain } from '@/shared/grouping';
+import { groupTabsWithAI } from '@/shared/ai-grouping';
+import type { IdleEntry, StoredTab, TabGroup } from '@/shared/types';
+
+const HEARTBEAT_ALARM = 'tabvault-heartbeat';
+const HEARTBEAT_INTERVAL_MIN = 1;
+const DASHBOARD_PATH = 'src/dashboard/index.html';
+
+// ─── Initialization ───────────────────────────────────────────────────────────
+
+chrome.runtime.onInstalled.addListener(async () => {
+  await initAlarm();
+  initContextMenu();
+  await hydrateTracker();
+  await ensureDashboard();
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  await initAlarm();
+  await hydrateTracker();
+  await ensureDashboard();
+});
+
+async function initAlarm() {
+  await chrome.alarms.clear(HEARTBEAT_ALARM);
+  chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: HEARTBEAT_INTERVAL_MIN });
+}
+
+function initContextMenu() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: 'tv-pin', title: '📌 Pin tab (never archive)', contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-unpin', title: 'Unpin tab', contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-park-now', title: '🗄️ Archive this tab now', contexts: ['page'] });
+  });
+}
+
+async function hydrateTracker() {
+  const saved = await db.getIdleMap();
+  tracker.hydrate(Object.values(saved));
+}
+
+async function ensureDashboard() {
+  const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
+  if (vaultTabId) {
+    try {
+      const tab = await chrome.tabs.get(vaultTabId as number);
+      if (tab) {
+        if (!tab.pinned) await chrome.tabs.update(vaultTabId as number, { pinned: true });
+        return;
+      }
+    } catch {
+      // Tab was closed — fall through to open a new one
+    }
+  }
+  const tab = await chrome.tabs.create({
+    url: chrome.runtime.getURL(DASHBOARD_PATH),
+    pinned: true,
+    active: false,
+  });
+  await chrome.storage.local.set({ vaultTabId: tab.id });
+}
+
+async function focusDashboard() {
+  await ensureDashboard();
+  const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
+  if (!vaultTabId) return;
+  try {
+    const tab = await chrome.tabs.get(vaultTabId as number);
+    await chrome.tabs.update(vaultTabId as number, { active: true });
+    if (tab.windowId !== undefined) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch { /* tab gone — ensureDashboard already reopened it */ }
+}
+
+// ─── Tab Lifecycle ────────────────────────────────────────────────────────────
+
+chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    tracker.markActive(tabId, {
+      url: tab.url ?? '',
+      title: tab.title ?? '',
+      faviconUrl: tab.favIconUrl ?? '',
+    });
+    // User returned to this tab — cancel any pending grace period
+    const entry = tracker.getEntry(tabId);
+    if (entry?.graceStartedAt) {
+      if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
+      tracker.cancelGrace(tabId);
+    }
+    await persistIdleMap();
+  } catch { /* tab may not be accessible yet */ }
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.status === 'complete' || changeInfo.title) {
+    tracker.markActive(tabId, {
+      url: tab.url ?? '',
+      title: tab.title ?? '',
+      faviconUrl: tab.favIconUrl ?? '',
+    });
+    await persistIdleMap();
+  }
+});
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
+  if (tabId === vaultTabId) {
+    // Vault tab was closed by user — re-open it
+    await chrome.storage.local.remove('vaultTabId');
+    ensureDashboard();
+  }
+  tracker.removeTab(tabId);
+  await persistIdleMap();
+});
+
+// ─── Heartbeat ────────────────────────────────────────────────────────────────
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== HEARTBEAT_ALARM) return;
+
+  await ensureDashboard();
+
+  const settings = await db.getSettings();
+
+  // Start grace period for newly idle tabs
+  const idleTabs = tracker.getIdleTabs(settings.idleThresholdMs);
+  for (const entry of idleTabs) {
+    const notifId = `tv-grace-${entry.tabId}`;
+    const graceMin = Math.round(settings.gracePeriodMs / 60000);
+    chrome.notifications.create(notifId, {
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: 'TabVault — Tab going to sleep',
+      message: `"${truncate(entry.title, 60)}" will be archived in ${graceMin} min.`,
+      buttons: [{ title: 'Keep open' }, { title: 'Archive now' }],
+      requireInteraction: false,
+    });
+    tracker.startGrace(entry.tabId, notifId);
+  }
+
+  // Archive tabs whose grace period has expired
+  for (const entry of tracker.getGracePeriodTabs()) {
+    if (tracker.expiredGrace(entry.tabId, settings.gracePeriodMs)) {
+      if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
+      await parkTab(entry);
+    }
+  }
+
+  await persistIdleMap();
+});
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) => {
+  if (!notifId.startsWith('tv-grace-')) return;
+  const tabId = parseInt(notifId.replace('tv-grace-', ''), 10);
+  chrome.notifications.clear(notifId);
+
+  if (buttonIndex === 0) {
+    // "Keep open"
+    tracker.cancelGrace(tabId);
+    tracker.markActive(tabId, {}); // reset idle clock
+  } else {
+    // "Archive now"
+    const entry = tracker.getEntry(tabId);
+    if (entry) await parkTab(entry);
+  }
+  await persistIdleMap();
+});
+
+chrome.notifications.onClicked.addListener(async (notifId) => {
+  if (!notifId.startsWith('tv-grace-')) return;
+  const tabId = parseInt(notifId.replace('tv-grace-', ''), 10);
+  chrome.notifications.clear(notifId);
+  tracker.cancelGrace(tabId);
+  tracker.markActive(tabId, {});
+  await persistIdleMap();
+  try { await chrome.tabs.update(tabId, { active: true }); } catch { /* already gone */ }
+});
+
+// ─── Context Menu ─────────────────────────────────────────────────────────────
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!tab?.id) return;
+  const { id: tabId, title = '' } = tab;
+
+  if (info.menuItemId === 'tv-pin') {
+    tracker.setPinned(tabId, true);
+    await persistIdleMap();
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: 'TabVault',
+      message: `"${truncate(title, 60)}" is pinned and will never be archived.`,
+    });
+  } else if (info.menuItemId === 'tv-unpin') {
+    tracker.setPinned(tabId, false);
+    await persistIdleMap();
+  } else if (info.menuItemId === 'tv-park-now') {
+    const entry = tracker.getEntry(tabId);
+    if (entry) {
+      if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
+      await parkTab(entry);
+    }
+  }
+});
+
+// ─── Messages (popup / dashboard) ────────────────────────────────────────────
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg.type === 'GET_STATUS') {
+    Promise.all([chrome.tabs.query({}), db.getSettings()]).then(([tabs, settings]) => {
+      sendResponse({
+        tabs: tabs.length,
+        entries: tracker.getAllEntries().length,
+        graceTabs: tracker.getGracePeriodTabs().length,
+        settings,
+      });
+    });
+    return true;
+  }
+
+  if (msg.type === 'PARK_TAB') {
+    const entry = tracker.getEntry(msg.tabId as number);
+    if (entry) {
+      parkTab(entry).then(() => sendResponse({ ok: true }));
+    } else {
+      sendResponse({ ok: false, error: 'Tab not tracked' });
+    }
+    return true;
+  }
+
+  if (msg.type === 'SET_PINNED') {
+    tracker.setPinned(msg.tabId as number, msg.pinned as boolean);
+    persistIdleMap().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'OPEN_DASHBOARD') {
+    focusDashboard().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'PURGE_ALL') {
+    purgeAll().then(result => sendResponse(result));
+    return true;
+  }
+
+  if (msg.type === 'SNAPSHOT_ALL') {
+    snapshotAll().then(result => sendResponse(result));
+    return true;
+  }
+});
+
+// ─── Core: Park ───────────────────────────────────────────────────────────────
+
+async function parkTab(entry: IdleEntry): Promise<void> {
+  const [existingTabs, existingGroups, settings] = await Promise.all([
+    db.getAllTabs(),
+    db.getAllGroups(),
+    db.getSettings(),
+  ]);
+
+  const newTab: StoredTab = {
+    id: uuidv4(),
+    url: entry.url,
+    title: entry.title || entry.url,
+    faviconUrl: entry.faviconUrl,
+    openedAt: entry.openedAt,
+    lastActiveAt: entry.lastActiveAt,
+    parkedAt: Date.now(),
+    groupId: '',
+    pinned: false,
+  };
+
+  const { tab: parkedTab, groups: updatedGroups } = assignNewTab(
+    newTab,
+    existingTabs,
+    existingGroups,
+    settings.groupingSensitivity,
+  );
+
+  await Promise.all([
+    db.saveTab(parkedTab),
+    ...updatedGroups.map(g => db.saveGroup(g)),
+  ]);
+
+  tracker.removeTab(entry.tabId);
+  try { await chrome.tabs.remove(entry.tabId); } catch { /* already closed */ }
+
+  await persistIdleMap();
+
+  // Signal the dashboard to refresh its view
+  chrome.runtime.sendMessage({ type: 'VAULT_UPDATED' }).catch(() => {});
+}
+
+// ─── Purge / Snapshot shared helpers ─────────────────────────────────────────
+
+const SYSTEM_PREFIXES = ['chrome://', 'moz-extension://', 'chrome-extension://', 'about:', 'edge://'];
+
+/** Collect and sort browser tabs eligible for purge/snapshot. */
+async function collectCandidateTabs(vaultTabId: number | undefined): Promise<chrome.tabs.Tab[]> {
+  const allChromeTabs = await chrome.tabs.query({});
+  return allChromeTabs
+    .filter(t =>
+      t.id !== undefined &&
+      t.id !== vaultTabId &&
+      t.url &&
+      !SYSTEM_PREFIXES.some(p => t.url!.startsWith(p)) &&
+      !t.pinned,
+    )
+    // Stable order: window first, then left-to-right tab position
+    .sort((a, b) => (a.windowId ?? 0) - (b.windowId ?? 0) || (a.index ?? 0) - (b.index ?? 0));
+}
+
+/**
+ * Build StoredTab records from sorted browser tabs.
+ * parkedAt is offset so the dashboard's descending sort preserves left-to-right order
+ * (leftmost tab → highest parkedAt → appears first in the column).
+ */
+function buildStoredTabs(chromeTabs: chrome.tabs.Tab[], now: number): StoredTab[] {
+  return chromeTabs.map((t, i) => ({
+    id: uuidv4(),
+    url: t.url!,
+    title: t.title || t.url!,
+    faviconUrl: t.favIconUrl || '',
+    openedAt: (t as { lastAccessed?: number }).lastAccessed ?? now,
+    lastActiveAt: (t as { lastAccessed?: number }).lastAccessed ?? now,
+    parkedAt: now - i * 100,   // position 0 = highest timestamp = top of column
+    groupId: '',
+    pinned: false,
+  }));
+}
+
+/**
+ * Group tabs that are already in a native browser tab group together.
+ * Each browser groupId → one vault group (labelled by dominant domain or multi-domain name).
+ * Returns the pre-assigned stored tabs and their vault groups, plus which indices were handled.
+ */
+function applyBrowserGroups(
+  chromeTabs: chrome.tabs.Tab[],
+  storedTabs: StoredTab[],
+  now: number,
+): { preGroups: TabGroup[]; preAssigned: Set<number> } {
+  // tab.groupId: Chrome uses positive int for groups, -1 (TAB_GROUP_ID_NONE) for ungrouped.
+  // Firefox may not expose this field — treat missing/undefined/-1 as ungrouped.
+  const browserGroupMap = new Map<number, number[]>();
+  for (let i = 0; i < chromeTabs.length; i++) {
+    const gid = (chromeTabs[i] as { groupId?: number }).groupId;
+    if (typeof gid === 'number' && gid > 0) {
+      if (!browserGroupMap.has(gid)) browserGroupMap.set(gid, []);
+      browserGroupMap.get(gid)!.push(i);
+    }
+  }
+
+  const preGroups: TabGroup[] = [];
+  const preAssigned = new Set<number>();
+
+  for (const indices of browserGroupMap.values()) {
+    const groupStoredTabs = indices.map(i => storedTabs[i]);
+    const domains = [...new Set(groupStoredTabs.map(t => extractDomain(t.url)).filter(Boolean))];
+    const label = domains.length === 1
+      ? domains[0]
+      : domains.length <= 3
+        ? domains.join(' · ')
+        : `${domains[0]} +${domains.length - 1} more`;
+
+    const group: TabGroup = {
+      id: uuidv4(),
+      label,
+      keywords: [],
+      tabIds: groupStoredTabs.map(t => t.id),
+      createdAt: now,
+    };
+
+    for (const i of indices) {
+      storedTabs[i] = { ...storedTabs[i], groupId: group.id };
+      preAssigned.add(i);
+    }
+    preGroups.push(group);
+  }
+
+  return { preGroups, preAssigned };
+}
+
+/**
+ * Assign ungrouped new tabs via AI (with TF-IDF fallback) or plain TF-IDF.
+ * Returns the final assigned tabs and complete group list.
+ */
+async function assignUngrouped(
+  newStoredTabs: StoredTab[],        // all new tabs (some already have groupId set)
+  preAssigned: Set<number>,          // indices already handled by browser groups
+  preGroups: TabGroup[],             // vault groups from browser groups
+  existingTabs: StoredTab[],
+  existingGroups: TabGroup[],
+  settings: import('@/shared/types').VaultSettings,
+  now: number,
+): Promise<{ assignedTabs: StoredTab[]; finalGroups: TabGroup[]; usedAI: boolean }> {
+  const ungroupedIndices = newStoredTabs.map((_, i) => i).filter(i => !preAssigned.has(i));
+  const ungroupedNew = ungroupedIndices.map(i => newStoredTabs[i]);
+
+  // Set openedAt spread so time-proximity pass doesn't merge unrelated tabs.
+  // We space by 30 min per tab (well beyond the 20 min TIME_WINDOW_MS) so only
+  // deliberately adjacent tabs get merged by time, not everything.
+  const ungroupedSpread = ungroupedNew.map((t, j) => ({
+    ...t,
+    openedAt: now - j * 30 * 60 * 1000,
+  }));
+
+  let usedAI = false;
+  let ungroupedAssigned: StoredTab[];
+  let allGroups: TabGroup[];
+
+  const apiKey = settings.anthropicApiKey?.trim();
+
+  if (apiKey && ungroupedNew.length > 0) {
+    const aiInput = ungroupedNew.map((t, i) => ({
+      index: i,
+      title: t.title || '',
+      url: t.url || '',
+    }));
+
+    const aiResult = await groupTabsWithAI(aiInput, apiKey).catch(() => null);
+
+    if (aiResult) {
+      usedAI = true;
+      const aiGroupObjects: TabGroup[] = aiResult.map(ag => ({
+        id: uuidv4(),
+        label: ag.label,
+        keywords: [],
+        tabIds: ag.tabIndices.map(i => ungroupedNew[i].id),
+        createdAt: now,
+      }));
+      for (const ag of aiResult) {
+        const group = aiGroupObjects[aiResult.indexOf(ag)];
+        for (const i of ag.tabIndices) {
+          ungroupedNew[i].groupId = group.id;
+        }
+      }
+      ungroupedAssigned = ungroupedNew;
+      allGroups = [...existingGroups, ...preGroups, ...aiGroupObjects];
+    } else {
+      // AI failed — TF-IDF fallback
+      const result = assignGroups([...existingTabs, ...ungroupedSpread], settings.groupingSensitivity, existingGroups);
+      ungroupedAssigned = result.tabs.filter(t => ungroupedNew.some(n => n.id === t.id));
+      allGroups = [...result.groups, ...preGroups];
+    }
+  } else {
+    const result = ungroupedNew.length > 0
+      ? assignGroups([...existingTabs, ...ungroupedSpread], settings.groupingSensitivity, existingGroups)
+      : { tabs: [], groups: existingGroups };
+    ungroupedAssigned = result.tabs.filter(t => ungroupedNew.some(n => n.id === t.id));
+    allGroups = [...result.groups, ...preGroups];
+  }
+
+  // Merge: pre-assigned tabs keep their groupIds, ungrouped tabs get their assigned groupIds
+  const preAssignedTabs = newStoredTabs.filter((_, i) => preAssigned.has(i));
+  const assignedTabs = [...preAssignedTabs, ...ungroupedAssigned];
+
+  return { assignedTabs, finalGroups: allGroups, usedAI };
+}
+
+// ─── Purge All ───────────────────────────────────────────────────────────────
+
+async function purgeAll(): Promise<{ parked: number; groups: number; usedAI: boolean }> {
+  const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
+  const tabsToPurge = await collectCandidateTabs(vaultTabId as number | undefined);
+  if (tabsToPurge.length === 0) return { parked: 0, groups: 0, usedAI: false };
+
+  const now = Date.now();
+  const [existingTabs, existingGroups, settings] = await Promise.all([
+    db.getAllTabs(), db.getAllGroups(), db.getSettings(),
+  ]);
+
+  const newStoredTabs = buildStoredTabs(tabsToPurge, now);
+  const { preGroups, preAssigned } = applyBrowserGroups(tabsToPurge, newStoredTabs, now);
+  const { assignedTabs, finalGroups, usedAI } = await assignUngrouped(
+    newStoredTabs, preAssigned, preGroups, existingTabs, existingGroups, settings, now,
+  );
+
+  await Promise.all([
+    ...assignedTabs.map(t => db.saveTab(t)),
+    ...finalGroups.map(g => db.saveGroup(g)),
+  ]);
+
+  const tabIds = tabsToPurge.map(t => t.id!);
+  try { await chrome.tabs.remove(tabIds); } catch { /* some may already be closed */ }
+
+  for (const tabId of tabIds) tracker.removeTab(tabId);
+  await persistIdleMap();
+  chrome.runtime.sendMessage({ type: 'VAULT_UPDATED' }).catch(() => {});
+
+  const newGroupCount = finalGroups.length - existingGroups.length;
+  return { parked: tabsToPurge.length, groups: Math.max(0, newGroupCount), usedAI };
+}
+
+// ─── Snapshot All ─────────────────────────────────────────────────────────────
+
+async function snapshotAll(): Promise<{ saved: number; groups: number; usedAI: boolean }> {
+  const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
+  const tabsToSnap = await collectCandidateTabs(vaultTabId as number | undefined);
+  if (tabsToSnap.length === 0) return { saved: 0, groups: 0, usedAI: false };
+
+  const now = Date.now();
+  const [existingTabs, existingGroups, settings] = await Promise.all([
+    db.getAllTabs(), db.getAllGroups(), db.getSettings(),
+  ]);
+
+  const newStoredTabs = buildStoredTabs(tabsToSnap, now);
+  const { preGroups, preAssigned } = applyBrowserGroups(tabsToSnap, newStoredTabs, now);
+  const { assignedTabs, finalGroups, usedAI } = await assignUngrouped(
+    newStoredTabs, preAssigned, preGroups, existingTabs, existingGroups, settings, now,
+  );
+
+  await Promise.all([
+    ...assignedTabs.map(t => db.saveTab(t)),
+    ...finalGroups.map(g => db.saveGroup(g)),
+  ]);
+
+  // Snapshot — tabs remain open in the browser, nothing is closed or removed from tracker
+  chrome.runtime.sendMessage({ type: 'VAULT_UPDATED' }).catch(() => {});
+
+  const newGroupCount = finalGroups.length - existingGroups.length;
+  return { saved: tabsToSnap.length, groups: Math.max(0, newGroupCount), usedAI };
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+async function persistIdleMap(): Promise<void> {
+  const map: Record<number, IdleEntry> = {};
+  for (const e of tracker.snapshot()) map[e.tabId] = e;
+  await db.saveIdleMap(map);
+}
+
+function truncate(str: string, max: number): string {
+  return str.length > max ? str.slice(0, max - 1) + '…' : str;
+}
