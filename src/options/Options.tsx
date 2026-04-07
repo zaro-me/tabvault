@@ -40,6 +40,32 @@ export default function Options() {
       </div>
 
       <div className="flex flex-col gap-5">
+        {/* Notifications */}
+        <SettingCard
+          label="Archiving mode"
+          hint="Silent mode archives tabs immediately when idle (default). Notification mode shows a countdown and lets you cancel before a tab is closed."
+        >
+          <div className="flex gap-3">
+            {([
+              { value: false, label: 'Silent (default)', desc: 'Archive tabs quietly in the background' },
+              { value: true,  label: 'Notify me',        desc: 'Show a countdown before archiving' },
+            ] as const).map(opt => (
+              <button
+                key={String(opt.value)}
+                onClick={() => setSettings(s => ({ ...s, notificationsEnabled: opt.value }))}
+                className={`flex-1 py-2 px-3 rounded-lg text-left text-sm border transition ${
+                  settings.notificationsEnabled === opt.value
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                }`}
+              >
+                <div className="font-medium">{opt.label}</div>
+                <div className="text-xs mt-0.5 opacity-70">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </SettingCard>
+
         {/* AI / Purge */}
         <SettingCard
           label="Anthropic API Key"
@@ -60,6 +86,10 @@ export default function Options() {
               {showKey ? 'hide' : 'show'}
             </button>
           </div>
+          <p className="mt-2 text-xs text-amber-500/80 flex items-start gap-1.5">
+            <span className="shrink-0 mt-0.5">⚠️</span>
+            <span>This key is stored locally in plaintext in your browser profile. Set a spending cap at <span className="text-amber-400">console.anthropic.com</span> to limit exposure.</span>
+          </p>
         </SettingCard>
 
         {/* Idle threshold */}

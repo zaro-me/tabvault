@@ -29,6 +29,26 @@ export function useVault() {
 
   const reload = useCallback(async () => {
     const [tabs, groups, groupOrder] = await Promise.all([getAllTabs(), getAllGroups(), getGroupOrder()]);
+
+    // Orphan cleanup: tabs whose groupId has no matching group get an Uncategorized group
+    const groupIds = new Set(groups.map(g => g.id));
+    const orphans  = tabs.filter(t => !groupIds.has(t.groupId));
+    if (orphans.length > 0) {
+      let uncategorized = groups.find(g => g.label === 'Uncategorized');
+      if (!uncategorized) {
+        uncategorized = { id: uuidv4(), label: 'Uncategorized', keywords: [], tabIds: [], createdAt: Date.now() };
+        groups.push(uncategorized);
+        await saveGroup(uncategorized);
+      }
+      for (const tab of orphans) {
+        const fixed = { ...tab, groupId: uncategorized!.id };
+        await saveTab(fixed);
+        tabs[tabs.indexOf(tab)] = fixed;
+        if (!uncategorized!.tabIds.includes(tab.id)) uncategorized!.tabIds.push(tab.id);
+      }
+      await saveGroup(uncategorized!);
+    }
+
     setState({ groups: buildGroupViews(tabs, groups, groupOrder), totalTabs: tabs.length, loading: false });
     writeBackup(tabs, groups).catch(() => {});
   }, []);
@@ -164,14 +184,15 @@ export function useVault() {
       else await saveGroup(updatedOld);
     }
 
-    // Add to target group
-    const allGroups    = await getAllGroups();
-    const targetGroup  = allGroups.find(g => g.id === targetGroupId);
+    // Add to target group (re-read groups in case a new one was just created above)
+    const latestGroups = toGroupId === '__new__' ? await getAllGroups() : groups;
+    const targetGroup  = latestGroups.find(g => g.id === targetGroupId);
     if (targetGroup) await saveGroup({ ...targetGroup, tabIds: [...targetGroup.tabIds, tabId] });
 
     await saveTab({ ...tab, groupId: targetGroupId });
 
-    log('move_tab', `Moved "${tab.title || tab.url}" → ${targetGroup?.label ?? newGroupLabel ?? 'new group'}`);
+    const targetLabel = targetGroup?.label ?? newGroupLabel ?? 'new group';
+    log('move_tab', `Moved "${tab.title || tab.url}" → ${targetLabel}`);
     setUndoEntry({
       label: `Moved "${tab.title || tab.url}"`,
       restore: async () => {

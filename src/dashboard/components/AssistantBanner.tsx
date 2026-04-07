@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react';
 import type { GroupView } from '@/shared/types';
+import { getRecentlyArchived } from '@/shared/storage';
 
 const FORGOTTEN_MS = 7 * 24 * 60 * 60 * 1000;
 const STALE_MS     = 3 * 24 * 60 * 60 * 1000;
@@ -17,6 +19,12 @@ interface Props {
 }
 
 export function AssistantBanner({ groups, dismissedAlerts, onDismiss }: Props) {
+  const [recentlyArchived, setRecentlyArchived] = useState<{ count: number; since: number } | null>(null);
+
+  useEffect(() => {
+    getRecentlyArchived().then(setRecentlyArchived);
+  }, [groups]); // re-check whenever vault updates
+
   const now     = Date.now();
   const allTabs = groups.flatMap(g => g.tabs);
   const hints: Hint[] = [];
@@ -57,6 +65,17 @@ export function AssistantBanner({ groups, dismissedAlerts, onDismiss }: Props) {
       key: 'stale-groups',
       icon: '🧹',
       text: `${staleGroups.length} group${staleGroups.length > 1 ? 's' : ''} untouched for 3+ days.`,
+      severity: 'info',
+    });
+  }
+
+  if (recentlyArchived && recentlyArchived.count > 0) {
+    const mins = Math.round((now - recentlyArchived.since) / 60_000);
+    const timeLabel = mins < 60 ? `${mins} min` : `${Math.round(mins / 60)}h`;
+    hints.push({
+      key: 'recently-archived',
+      icon: '📥',
+      text: `${recentlyArchived.count} tab${recentlyArchived.count > 1 ? 's' : ''} silently archived in the last ${timeLabel}.`,
       severity: 'info',
     });
   }

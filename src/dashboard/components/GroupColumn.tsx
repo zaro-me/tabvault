@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { GROUP_COLORS } from '@/shared/types';
 import type { GroupView, StoredTab } from '@/shared/types';
 import { TabCard } from './TabCard';
@@ -95,6 +95,11 @@ export function GroupColumn({
     else setLabelInput(group.label);
     setEditing(false);
   }
+
+  const sortedTabs = useMemo(
+    () => group.tabs.slice().sort((a, b) => b.parkedAt - a.parkedAt),
+    [group.tabs],
+  );
 
   const colorBar = GROUP_COLORS.find(c => c.id === (group.color ?? 'none'))?.bar ?? '';
   const dragOverStyle = isGroupDragOver
@@ -244,10 +249,7 @@ export function GroupColumn({
       {/* Tab list */}
       {!collapsed && (
         <div className="divide-y divide-slate-800/50 rounded-b-xl overflow-hidden">
-          {group.tabs
-            .slice()
-            .sort((a, b) => b.parkedAt - a.parkedAt)
-            .map(tab => (
+          {sortedTabs.map(tab => (
               <TabCard
                 key={tab.id}
                 tab={tab}

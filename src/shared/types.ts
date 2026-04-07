@@ -38,6 +38,8 @@ export interface VaultSettings {
   ignoredDomains: string[];
   groupingSensitivity: 'low' | 'medium' | 'high';
   anthropicApiKey?: string;
+  /** When false (default), tabs are archived silently with no notification or grace period. */
+  notificationsEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultSettings = {
@@ -45,6 +47,7 @@ export const DEFAULT_SETTINGS: VaultSettings = {
   gracePeriodMs: 15 * 60 * 1000,         // 15 minutes
   ignoredDomains: [],
   groupingSensitivity: 'medium',
+  notificationsEnabled: false,            // silent by default — opt-in
 };
 
 // Predefined color palette for groups

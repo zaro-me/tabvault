@@ -4,13 +4,21 @@ import type { StoredTab, TabGroup } from './types';
 // --- Constants ---
 
 const STOP_WORDS = new Set([
+  // Articles / conjunctions / prepositions
   'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can',
   'her', 'was', 'one', 'our', 'out', 'get', 'has', 'him', 'his',
   'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'who',
-  'did', 'let', 'put', 'say', 'she', 'too', 'use', 'com', 'www',
-  'http', 'https', 'html', 'php', 'asp', 'with', 'from', 'this',
-  'that', 'have', 'they', 'will', 'been', 'when', 'what', 'more',
-  'page', 'home', 'site', 'web', 'app', 'user', 'info', 'docs',
+  'did', 'let', 'put', 'say', 'she', 'too', 'use', 'with', 'from',
+  'this', 'that', 'have', 'they', 'will', 'been', 'when', 'what',
+  'more', 'also', 'into', 'than', 'then', 'some', 'would', 'about',
+  // Web / tech noise
+  'com', 'www', 'http', 'https', 'html', 'php', 'asp',
+  'page', 'home', 'site', 'web', 'app', 'user', 'info',
+  // Generic tech words that add no grouping signal
+  'api', 'docs', 'help', 'support', 'login', 'sign', 'guide',
+  'blog', 'post', 'read', 'view', 'list', 'search', 'index',
+  // Common filler in tab titles
+  'update', 'official', 'free', 'best', 'top', 'review',
 ]);
 
 const SIMILARITY_THRESHOLD: Record<'low' | 'medium' | 'high', number> = {
@@ -20,6 +28,13 @@ const SIMILARITY_THRESHOLD: Record<'low' | 'medium' | 'high', number> = {
 };
 
 const TIME_WINDOW_MS = 20 * 60 * 1000; // 20 minutes
+
+/**
+ * Maximum tabs to run full O(n²) pairwise TF-IDF comparison on.
+ * Beyond this, remaining tabs are assigned greedily to the nearest cluster.
+ * Keeps worst-case time at O(CAP² + n·CAP) instead of O(n²).
+ */
+const TFIDF_CAP = 300;
 
 // --- Text utilities ---
 
@@ -123,11 +138,6 @@ function makeUnionFind(n: number) {
 /**
  * Assigns ONE new tab to an existing group or creates a new group for it.
  * Never re-clusters existing tabs — their group assignments are preserved.
- *
- * Passes:
- *   1. Domain  — exact root-domain match with any tab already in a group
- *   2. Topic   — TF-IDF cosine similarity against existing tabs above threshold
- *   3. New group — no match → fresh group
  */
 export function assignNewTab(
   newTab: StoredTab,
@@ -149,7 +159,7 @@ export function assignNewTab(
     }
   }
 
-  // Pass 2: topic similarity against individual existing tabs
+  // Pass 2: topic similarity against existing tabs
   if (newTokens.length > 0 && existingTabs.length > 0) {
     const allTokenSets = [newTokens, ...existingTabs.map(getTabTokens)];
     const [newVec, ...existingVecs] = buildTFIDF(allTokenSets);
@@ -175,7 +185,7 @@ export function assignNewTab(
   const newGroup: TabGroup = {
     id: uuidv4(),
     label: inferGroupLabel([newTab], newTokens),
-    keywords: topKeywords(newTokens),
+    keywords: [],
     tabIds: [newTab.id],
     createdAt: Date.now(),
   };
@@ -197,12 +207,12 @@ function mergeIntoGroup(
   };
 }
 
-// ── Bulk assignment (initial import or manual re-group) ───────────────────────
+// ── Bulk assignment (purge/snapshot/import) ───────────────────────────────────
 
 /**
  * Pure function — assigns every tab to a group using three passes:
  *   1. Domain  — same root domain → same group
- *   2. Topic   — TF-IDF cosine similarity above threshold → same group
+ *   2. Topic   — TF-IDF cosine similarity (O(n²) capped at TFIDF_CAP; greedy for the rest)
  *   3. Time    — opened within TIME_WINDOW_MS of each other (fallback)
  *
  * Reuses existing groups when possible; creates new ones otherwise.
@@ -215,12 +225,13 @@ export function assignGroups(
   if (tabs.length === 0) return { tabs: [], groups: existingGroups };
 
   const threshold = SIMILARITY_THRESHOLD[sensitivity];
-  const tabsCopy = tabs.map(t => ({ ...t }));
+  const tabsCopy  = tabs.map(t => ({ ...t }));
   const tokenSets = tabsCopy.map(getTabTokens);
-  const vectors = buildTFIDF(tokenSets);
+  const vectors   = buildTFIDF(tokenSets);
   const { find, union } = makeUnionFind(tabsCopy.length);
+  const n = tabsCopy.length;
 
-  // Pass 1: domain
+  // Pass 1: domain clustering — O(n)
   const domainIndex = new Map<string, number[]>();
   tabsCopy.forEach((tab, i) => {
     const d = extractDomain(tab.url);
@@ -233,15 +244,32 @@ export function assignGroups(
     for (let i = 1; i < indices.length; i++) union(indices[0], indices[i]);
   }
 
-  // Pass 2: topic similarity
-  for (let i = 0; i < tabsCopy.length; i++) {
-    for (let j = i + 1; j < tabsCopy.length; j++) {
+  // Pass 2: TF-IDF topic similarity
+  // For n ≤ TFIDF_CAP: full O(n²) pairwise comparison
+  // For n > TFIDF_CAP: full pairwise on first TFIDF_CAP, then greedy assignment for the rest
+  const cap = Math.min(n, TFIDF_CAP);
+
+  for (let i = 0; i < cap; i++) {
+    for (let j = i + 1; j < cap; j++) {
       if (find(i) === find(j)) continue;
       if (cosineSimilarity(vectors[i], vectors[j]) >= threshold) union(i, j);
     }
   }
 
-  // Pass 3: time proximity (fallback for tabs with no stronger shared signal)
+  if (n > TFIDF_CAP) {
+    // Greedily assign overflow tabs to nearest clustered tab
+    for (let i = cap; i < n; i++) {
+      let bestSim = threshold;
+      let bestJ   = -1;
+      for (let j = 0; j < cap; j++) {
+        const sim = cosineSimilarity(vectors[i], vectors[j]);
+        if (sim > bestSim) { bestSim = sim; bestJ = j; }
+      }
+      if (bestJ !== -1) union(i, bestJ);
+    }
+  }
+
+  // Pass 3: time proximity fallback
   const byTime = [...tabsCopy.keys()].sort(
     (a, b) => tabsCopy[a].openedAt - tabsCopy[b].openedAt,
   );
@@ -265,10 +293,9 @@ export function assignGroups(
   const resultGroups: TabGroup[] = [];
 
   for (const indices of clusters.values()) {
-    const clusterTabs = indices.map(i => tabsCopy[i]);
+    const clusterTabs   = indices.map(i => tabsCopy[i]);
     const clusterTokens = indices.flatMap(i => tokenSets[i]);
 
-    // Reuse existing group if any tab in the cluster already belonged to one
     const existingGroupId = clusterTabs.find(
       t => t.groupId && existingGroupMap.has(t.groupId),
     )?.groupId;
@@ -278,7 +305,7 @@ export function assignGroups(
       : {
           id: uuidv4(),
           label: inferGroupLabel(clusterTabs, clusterTokens),
-          keywords: topKeywords(clusterTokens),
+          keywords: [], // computed but not currently displayed — skip to save memory
           tabIds: [],
           createdAt: Date.now(),
         };

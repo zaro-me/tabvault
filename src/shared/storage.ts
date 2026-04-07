@@ -132,6 +132,30 @@ export async function saveGroupOrder(order: string[]): Promise<void> {
   await chrome.storage.local.set({ groupOrder: order });
 }
 
+// --- Recently archived (for passive-mode dashboard hint) ---
+
+export async function bumpRecentlyArchived(): Promise<void> {
+  const result = await chrome.storage.local.get('recentlyArchived');
+  const prev   = result.recentlyArchived as { count: number; since: number } | undefined;
+  const now    = Date.now();
+  const TWO_H  = 2 * 60 * 60 * 1000;
+  const since  = prev && now - prev.since < TWO_H ? prev.since : now;
+  const count  = prev && now - prev.since < TWO_H ? prev.count + 1 : 1;
+  await chrome.storage.local.set({ recentlyArchived: { count, since } });
+}
+
+export async function getRecentlyArchived(): Promise<{ count: number; since: number } | null> {
+  const result = await chrome.storage.local.get('recentlyArchived');
+  const data   = result.recentlyArchived as { count: number; since: number } | undefined;
+  if (!data) return null;
+  if (Date.now() - data.since > 2 * 60 * 60 * 1000) return null;
+  return data;
+}
+
+export async function clearRecentlyArchived(): Promise<void> {
+  await chrome.storage.local.remove('recentlyArchived');
+}
+
 // --- Idle map (chrome.storage.local) ---
 // Persists the in-memory activity map across service worker restarts.
 
