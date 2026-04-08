@@ -32,6 +32,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(async () => {
   await initAlarm();
+  initContextMenu();   // re-register — menus don't persist across browser restarts in MV3
   await hydrateTracker();
   await ensureDashboard();
 });
@@ -43,9 +44,10 @@ async function initAlarm() {
 
 function initContextMenu() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'tv-pin',      title: '📌 Pin tab (never archive)', contexts: ['page'] });
-    chrome.contextMenus.create({ id: 'tv-unpin',    title: 'Unpin tab',                  contexts: ['page'] });
-    chrome.contextMenus.create({ id: 'tv-park-now', title: '🗄️ Archive this tab now',    contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-pin',       title: '📌 Pin tab (never archive)', contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-unpin',     title: '🔓 Unpin tab',               contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-sep',       type: 'separator',                   contexts: ['page'] });
+    chrome.contextMenus.create({ id: 'tv-park-now',  title: '🗄️ Archive tab to vault',    contexts: ['page'] });
   });
 }
 
@@ -209,26 +211,54 @@ chrome.notifications.onClicked.addListener(async (notifId) => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (!tab?.id) return;
-  const { id: tabId, title = '' } = tab;
+  const { id: tabId, title = '', url = '' } = tab;
+
+  // Reject system/extension pages for archive; allow for pin actions
+  const isSystemUrl = !url || SYSTEM_PREFIXES.some(p => url.startsWith(p));
 
   if (info.menuItemId === 'tv-pin') {
+    // Ensure tab is in the tracker before pinning (may not be tracked if just opened)
+    if (!tracker.getEntry(tabId)) {
+      tracker.markActive(tabId, {
+        url:        tab.url        ?? '',
+        title:      tab.title      ?? '',
+        faviconUrl: tab.favIconUrl ?? '',
+      });
+    }
     tracker.setPinned(tabId, true);
     await persistIdleMap();
-    chrome.notifications.create({
+    chrome.notifications.create('tv-pin-confirm', {
       type:    'basic',
       iconUrl: 'icons/icon48.png',
-      title:   'TabVault',
-      message: `"${truncate(title, 60)}" is pinned and will never be archived.`,
+      title:   'TabVault — Tab pinned',
+      message: `"${truncate(title, 60)}" will never be archived automatically.`,
     });
+
   } else if (info.menuItemId === 'tv-unpin') {
     tracker.setPinned(tabId, false);
     await persistIdleMap();
+
   } else if (info.menuItemId === 'tv-park-now') {
-    const entry = tracker.getEntry(tabId);
+    if (isSystemUrl) return;
+
+    let entry = tracker.getEntry(tabId);
     if (entry) {
+      // Cancel any active grace notification before parking
       if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
-      enqueuePark(entry);
+    } else {
+      // Tab not yet tracked (fresh browser start, newly opened tab, etc.)
+      // Construct a synthetic IdleEntry directly from the browser tab object
+      entry = {
+        tabId,
+        url:          tab.url          ?? '',
+        title:        tab.title        ?? '',
+        faviconUrl:   tab.favIconUrl   ?? '',
+        openedAt:     (tab as { lastAccessed?: number }).lastAccessed ?? Date.now(),
+        lastActiveAt: (tab as { lastAccessed?: number }).lastAccessed ?? Date.now(),
+        pinned:       false,
+      };
     }
+    enqueuePark(entry);
   }
 });
 
