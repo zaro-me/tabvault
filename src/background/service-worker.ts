@@ -43,15 +43,37 @@ async function initAlarm() {
 }
 
 function initContextMenu() {
-  chrome.contextMenus.removeAll(() => {
-    // contexts: ['page', 'tab'] — 'page' = right-click on page content,
-    // 'tab' = right-click on a tab in the tab strip (Firefox + Chrome 114+)
-    const contexts: chrome.contextMenus.ContextType[] = ['page', 'tab'];
-    chrome.contextMenus.create({ id: 'tv-pin',      title: '📌 Pin tab (never archive)', contexts });
-    chrome.contextMenus.create({ id: 'tv-unpin',    title: '🔓 Unpin tab',               contexts });
-    chrome.contextMenus.create({ id: 'tv-sep',      type: 'separator',                   contexts });
-    chrome.contextMenus.create({ id: 'tv-park-now', title: '🗄️ Archive tab to vault',    contexts });
-  });
+  // Firefox exposes a native `browser` global; Chrome only has `chrome`.
+  // Firefox's chrome.contextMenus shim strips the 'tab' context before
+  // passing it to the underlying browser.menus, so we must use browser.menus
+  // directly in Firefox to get the tab-strip right-click menu working.
+  const ffMenus = (globalThis as any).browser?.menus as {
+    removeAll: (cb?: () => void) => void;
+    create: (props: object) => void;
+  } | undefined;
+
+  const items = [
+    { id: 'tv-pin',      title: '📌 Pin tab (never archive)' },
+    { id: 'tv-unpin',    title: '🔓 Unpin tab' },
+    { id: 'tv-sep',      type: 'separator' },
+    { id: 'tv-park-now', title: '🗄️ Archive tab to vault' },
+  ];
+  const contexts = ['page', 'tab'];
+
+  if (ffMenus) {
+    ffMenus.removeAll(() => {
+      for (const item of items) ffMenus.create({ ...item, contexts });
+    });
+  } else {
+    chrome.contextMenus.removeAll(() => {
+      for (const item of items) {
+        chrome.contextMenus.create({
+          ...item,
+          contexts: contexts as chrome.contextMenus.ContextType[],
+        });
+      }
+    });
+  }
 }
 
 async function hydrateTracker() {

@@ -33,28 +33,38 @@ export function GroupColumn({
   const [confirmDelete, setConfirmDelete]    = useState(false);
   const [isDragOver, setIsDragOver]          = useState(false);
   const [groupDropAction, setGroupDropAction] = useState<GroupDropAction | null>(null);
-  // Ref mirrors groupDropAction so handleDrop always reads the current value,
-  // not the stale one captured in the React closure.
-  const groupDropActionRef = useRef<GroupDropAction | null>(null);
 
-  // ── Shared drag enter / leave ───────────────────────────────────────────────
-  // Using e.relatedTarget containment instead of a counter to avoid false
-  // clears when the pointer moves between child elements.
+  // Ref mirrors state so handleDrop always reads the latest value,
+  // not the stale value captured by the React event handler closure.
+  const groupDropActionRef  = useRef<GroupDropAction | null>(null);
+  // Timer-based dragleave debounce — more reliable than e.relatedTarget
+  // in Firefox, where relatedTarget can be null even when moving to a child.
+  const dragLeaveTimerRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function clearDragLeaveTimer() {
+    if (dragLeaveTimerRef.current !== null) {
+      clearTimeout(dragLeaveTimerRef.current);
+      dragLeaveTimerRef.current = null;
+    }
+  }
+
+  // ── Drag enter / leave / over / drop ───────────────────────────────────────
 
   function handleDragEnter() {
+    clearDragLeaveTimer(); // cancel any pending clear from a previous dragleave
     if (activeDrag.current) setIsDragOver(true);
   }
 
-  function handleDragLeave(e: React.DragEvent) {
-    // Ignore if mouse is still inside the drop zone (moved to a child element)
-    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
-
-    if (activeDrag.current) setIsDragOver(false);
-
-    if (activeGroupDrag.current && activeGroupDrag.current !== group.id) {
+  function handleDragLeave() {
+    // Defer the clear by one tick. If dragenter fires immediately after
+    // (pointer moved to a child element), clearDragLeaveTimer() cancels it.
+    // This avoids false clears when traversing child elements.
+    dragLeaveTimerRef.current = setTimeout(() => {
+      dragLeaveTimerRef.current = null;
+      setIsDragOver(false);
       groupDropActionRef.current = null;
       setGroupDropAction(null);
-    }
+    }, 0);
   }
 
   function handleDragOver(e: React.DragEvent) {
@@ -68,17 +78,18 @@ export function GroupColumn({
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
 
-      // Determine drop zone from mouse Y relative to this element
+      // Compute drop zone from mouse Y relative to the card
       const rect   = e.currentTarget.getBoundingClientRect();
       const pct    = (e.clientY - rect.top) / rect.height;
       const action: GroupDropAction = pct < 0.33 ? 'before' : pct > 0.67 ? 'after' : 'merge';
-      groupDropActionRef.current = action;   // always current for handleDrop
-      setGroupDropAction(action);            // drives the visual indicator
+      groupDropActionRef.current = action;
+      setGroupDropAction(action);
     }
   }
 
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
+    clearDragLeaveTimer();
 
     if (activeDrag.current) {
       setIsDragOver(false);
@@ -96,6 +107,7 @@ export function GroupColumn({
   }
 
   // ── Group drag handle ───────────────────────────────────────────────────────
+
   function handleGroupDragStart(e: React.DragEvent) {
     activeGroupDrag.current = group.id;
     e.dataTransfer.setData('text/plain', group.id); // required by Firefox
@@ -104,9 +116,12 @@ export function GroupColumn({
 
   function handleGroupDragEnd() {
     activeGroupDrag.current = null;
+    clearDragLeaveTimer();
     groupDropActionRef.current = null;
     setGroupDropAction(null);
   }
+
+  // ── Misc ────────────────────────────────────────────────────────────────────
 
   function submitRename() {
     const trimmed = labelInput.trim();
@@ -130,7 +145,7 @@ export function GroupColumn({
 
   return (
     <div className="relative">
-      {/* Insert-before drop line */}
+      {/* Insert-before line */}
       {groupDropAction === 'before' && (
         <div
           className="absolute -top-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10 pointer-events-none"
@@ -292,7 +307,7 @@ export function GroupColumn({
         )}
       </div>
 
-      {/* Insert-after drop line */}
+      {/* Insert-after line */}
       {groupDropAction === 'after' && (
         <div
           className="absolute -bottom-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10 pointer-events-none"
