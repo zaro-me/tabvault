@@ -31,10 +31,11 @@ export function GroupColumn({
   const [showMenu, setShowMenu]           = useState(false);
   const [showColors, setShowColors]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [isDragOver, setIsDragOver]       = useState(false);
-  const [groupDropAction, setGroupDropAction] = useState<GroupDropAction | null>(null);
-  const dragCounter                       = useRef(0);
-  const groupDragCounter                  = useRef(0);
+  const [isDragOver, setIsDragOver]            = useState(false);
+  const [groupDropAction, setGroupDropAction]  = useState<GroupDropAction | null>(null);
+  const groupDropActionRef                     = useRef<GroupDropAction | null>(null);
+  const dragCounter                            = useRef(0);
+  const groupDragCounter                       = useRef(0);
 
   // ── Tab drop zone ───────────────────────────────────────────────────────────
   function handleDragEnter() {
@@ -55,10 +56,11 @@ export function GroupColumn({
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       // Determine drop zone by mouse Y position within this element
-      const rect = e.currentTarget.getBoundingClientRect();
-      const pct  = (e.clientY - rect.top) / rect.height;
+      const rect   = e.currentTarget.getBoundingClientRect();
+      const pct    = (e.clientY - rect.top) / rect.height;
       const action: GroupDropAction = pct < 0.33 ? 'before' : pct > 0.67 ? 'after' : 'merge';
-      setGroupDropAction(action);
+      groupDropActionRef.current = action;  // ref — always readable in handleDrop closure
+      setGroupDropAction(action);           // state — drives the visual indicator
     }
   }
   function handleDrop(e: React.DragEvent) {
@@ -69,8 +71,9 @@ export function GroupColumn({
       const drag = activeDrag.current;
       if (drag.fromGroupId !== group.id) onMoveTab(drag.tabId, drag.fromGroupId, group.id);
     } else if (activeGroupDrag.current) {
-      const action = groupDropAction ?? 'before';
+      const action = groupDropActionRef.current ?? 'before'; // read ref, not stale state
       groupDragCounter.current = 0;
+      groupDropActionRef.current = null;
       setGroupDropAction(null);
       onGroupDrop(group.id, action);
     }
@@ -84,6 +87,7 @@ export function GroupColumn({
   }
   function handleGroupDragEnd() {
     activeGroupDrag.current = null;
+    groupDropActionRef.current = null;
     setGroupDropAction(null);
     groupDragCounter.current = 0;
   }
@@ -94,7 +98,10 @@ export function GroupColumn({
   function handleGroupDragLeave() {
     if (!activeGroupDrag.current) return;
     groupDragCounter.current--;
-    if (groupDragCounter.current === 0) setGroupDropAction(null);
+    if (groupDragCounter.current === 0) {
+      groupDropActionRef.current = null;
+      setGroupDropAction(null);
+    }
   }
 
   function submitRename() {
