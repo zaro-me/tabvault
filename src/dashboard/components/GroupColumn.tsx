@@ -4,7 +4,7 @@ import type { GroupView, StoredTab } from '@/shared/types';
 import { TabCard } from './TabCard';
 import { activeDrag, activeGroupDrag } from '../dragState';
 
-type GroupDropAction = 'before' | 'after' | 'merge';
+export type GroupDropAction = 'before' | 'after' | 'merge';
 
 interface Props {
   group: GroupView;
@@ -25,54 +25,70 @@ export function GroupColumn({
   onRename, onDelete, onRestoreAll,
   onMoveTab, onSetColor, onGroupDrop,
 }: Props) {
-  const [collapsed, setCollapsed]         = useState(true);
-  const [editing, setEditing]             = useState(false);
-  const [labelInput, setLabelInput]       = useState(group.label);
-  const [showMenu, setShowMenu]           = useState(false);
-  const [showColors, setShowColors]       = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [isDragOver, setIsDragOver]            = useState(false);
-  const [groupDropAction, setGroupDropAction]  = useState<GroupDropAction | null>(null);
-  const groupDropActionRef                     = useRef<GroupDropAction | null>(null);
-  const dragCounter                            = useRef(0);
-  const groupDragCounter                       = useRef(0);
+  const [collapsed, setCollapsed]            = useState(true);
+  const [editing, setEditing]                = useState(false);
+  const [labelInput, setLabelInput]          = useState(group.label);
+  const [showMenu, setShowMenu]              = useState(false);
+  const [showColors, setShowColors]          = useState(false);
+  const [confirmDelete, setConfirmDelete]    = useState(false);
+  const [isDragOver, setIsDragOver]          = useState(false);
+  const [groupDropAction, setGroupDropAction] = useState<GroupDropAction | null>(null);
+  // Ref mirrors groupDropAction so handleDrop always reads the current value,
+  // not the stale one captured in the React closure.
+  const groupDropActionRef = useRef<GroupDropAction | null>(null);
 
-  // ── Tab drop zone ───────────────────────────────────────────────────────────
+  // ── Shared drag enter / leave ───────────────────────────────────────────────
+  // Using e.relatedTarget containment instead of a counter to avoid false
+  // clears when the pointer moves between child elements.
+
   function handleDragEnter() {
-    if (!activeDrag.current) return;
-    dragCounter.current++;
-    setIsDragOver(true);
+    if (activeDrag.current) setIsDragOver(true);
   }
-  function handleDragLeave() {
-    if (!activeDrag.current) return;
-    dragCounter.current--;
-    if (dragCounter.current === 0) setIsDragOver(false);
+
+  function handleDragLeave(e: React.DragEvent) {
+    // Ignore if mouse is still inside the drop zone (moved to a child element)
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+
+    if (activeDrag.current) setIsDragOver(false);
+
+    if (activeGroupDrag.current && activeGroupDrag.current !== group.id) {
+      groupDropActionRef.current = null;
+      setGroupDropAction(null);
+    }
   }
+
   function handleDragOver(e: React.DragEvent) {
     if (activeDrag.current) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-    } else if (activeGroupDrag.current && activeGroupDrag.current !== group.id) {
+      return;
+    }
+
+    if (activeGroupDrag.current && activeGroupDrag.current !== group.id) {
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
-      // Determine drop zone by mouse Y position within this element
+
+      // Determine drop zone from mouse Y relative to this element
       const rect   = e.currentTarget.getBoundingClientRect();
       const pct    = (e.clientY - rect.top) / rect.height;
       const action: GroupDropAction = pct < 0.33 ? 'before' : pct > 0.67 ? 'after' : 'merge';
-      groupDropActionRef.current = action;  // ref — always readable in handleDrop closure
-      setGroupDropAction(action);           // state — drives the visual indicator
+      groupDropActionRef.current = action;   // always current for handleDrop
+      setGroupDropAction(action);            // drives the visual indicator
     }
   }
+
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
+
     if (activeDrag.current) {
-      dragCounter.current = 0;
       setIsDragOver(false);
       const drag = activeDrag.current;
       if (drag.fromGroupId !== group.id) onMoveTab(drag.tabId, drag.fromGroupId, group.id);
-    } else if (activeGroupDrag.current) {
-      const action = groupDropActionRef.current ?? 'before'; // read ref, not stale state
-      groupDragCounter.current = 0;
+      return;
+    }
+
+    if (activeGroupDrag.current && activeGroupDrag.current !== group.id) {
+      const action = groupDropActionRef.current ?? 'before';
       groupDropActionRef.current = null;
       setGroupDropAction(null);
       onGroupDrop(group.id, action);
@@ -85,23 +101,11 @@ export function GroupColumn({
     e.dataTransfer.setData('text/plain', group.id); // required by Firefox
     e.dataTransfer.effectAllowed = 'move';
   }
+
   function handleGroupDragEnd() {
     activeGroupDrag.current = null;
     groupDropActionRef.current = null;
     setGroupDropAction(null);
-    groupDragCounter.current = 0;
-  }
-  function handleGroupDragEnter() {
-    if (!activeGroupDrag.current || activeGroupDrag.current === group.id) return;
-    groupDragCounter.current++;
-  }
-  function handleGroupDragLeave() {
-    if (!activeGroupDrag.current) return;
-    groupDragCounter.current--;
-    if (groupDragCounter.current === 0) {
-      groupDropActionRef.current = null;
-      setGroupDropAction(null);
-    }
   }
 
   function submitRename() {
@@ -128,14 +132,16 @@ export function GroupColumn({
     <div className="relative">
       {/* Insert-before drop line */}
       {groupDropAction === 'before' && (
-        <div className="absolute -top-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10"
-             style={{ boxShadow: '0 0 6px 1px rgba(129,140,248,0.7)' }} />
+        <div
+          className="absolute -top-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10 pointer-events-none"
+          style={{ boxShadow: '0 0 6px 1px rgba(129,140,248,0.7)' }}
+        />
       )}
 
       <div
         className={`bg-slate-900 border rounded-xl transition-all ${cardStyle}`}
-        onDragEnter={() => { handleDragEnter(); handleGroupDragEnter(); }}
-        onDragLeave={() => { handleDragLeave(); handleGroupDragLeave(); }}
+        onDragEnter={handleDragEnter}
+        onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
@@ -273,23 +279,25 @@ export function GroupColumn({
         {!collapsed && (
           <div className="divide-y divide-slate-800/50 rounded-b-xl overflow-hidden">
             {sortedTabs.map(tab => (
-                <TabCard
-                  key={tab.id}
-                  tab={tab}
-                  allGroups={allGroups}
-                  onRestore={() => onRestoreTab(tab)}
-                  onDelete={() => onDeleteTab(tab.id, tab.groupId)}
-                  onMove={(toGroupId, newLabel) => onMoveTab(tab.id, tab.groupId, toGroupId, newLabel)}
-                />
-              ))}
+              <TabCard
+                key={tab.id}
+                tab={tab}
+                allGroups={allGroups}
+                onRestore={() => onRestoreTab(tab)}
+                onDelete={() => onDeleteTab(tab.id, tab.groupId)}
+                onMove={(toGroupId, newLabel) => onMoveTab(tab.id, tab.groupId, toGroupId, newLabel)}
+              />
+            ))}
           </div>
         )}
       </div>
 
       {/* Insert-after drop line */}
       {groupDropAction === 'after' && (
-        <div className="absolute -bottom-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10"
-             style={{ boxShadow: '0 0 6px 1px rgba(129,140,248,0.7)' }} />
+        <div
+          className="absolute -bottom-2 inset-x-0 h-0.5 rounded-full bg-indigo-400 z-10 pointer-events-none"
+          style={{ boxShadow: '0 0 6px 1px rgba(129,140,248,0.7)' }}
+        />
       )}
     </div>
   );

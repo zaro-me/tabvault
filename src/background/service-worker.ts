@@ -44,10 +44,13 @@ async function initAlarm() {
 
 function initContextMenu() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'tv-pin',       title: '📌 Pin tab (never archive)', contexts: ['page'] });
-    chrome.contextMenus.create({ id: 'tv-unpin',     title: '🔓 Unpin tab',               contexts: ['page'] });
-    chrome.contextMenus.create({ id: 'tv-sep',       type: 'separator',                   contexts: ['page'] });
-    chrome.contextMenus.create({ id: 'tv-park-now',  title: '🗄️ Archive tab to vault',    contexts: ['page'] });
+    // contexts: ['page', 'tab'] — 'page' = right-click on page content,
+    // 'tab' = right-click on a tab in the tab strip (Firefox + Chrome 114+)
+    const contexts: chrome.contextMenus.ContextType[] = ['page', 'tab'];
+    chrome.contextMenus.create({ id: 'tv-pin',      title: '📌 Pin tab (never archive)', contexts });
+    chrome.contextMenus.create({ id: 'tv-unpin',    title: '🔓 Unpin tab',               contexts });
+    chrome.contextMenus.create({ id: 'tv-sep',      type: 'separator',                   contexts });
+    chrome.contextMenus.create({ id: 'tv-park-now', title: '🗄️ Archive tab to vault',    contexts });
   });
 }
 
