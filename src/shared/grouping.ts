@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { StoredTab, TabGroup } from './types';
+import { pickNextColor } from './types';
 
 // --- Constants ---
 
@@ -188,6 +189,7 @@ export function assignNewTab(
     keywords: [],
     tabIds: [newTab.id],
     createdAt: Date.now(),
+    color: pickNextColor(existingGroups),
   };
   return {
     tab: { ...newTab, groupId: newGroup.id },
@@ -308,6 +310,7 @@ export function assignGroups(
           keywords: [], // computed but not currently displayed — skip to save memory
           tabIds: [],
           createdAt: Date.now(),
+          color: pickNextColor([...existingGroups, ...resultGroups]),
         };
 
     for (const i of indices) {

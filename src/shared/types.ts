@@ -66,6 +66,24 @@ export const GROUP_COLORS = [
 
 export type GroupColorId = typeof GROUP_COLORS[number]['id'];
 
+/**
+ * Returns the color ID (never 'none') that is least used across existingGroups.
+ * Ties are broken by palette order so colors cycle predictably.
+ */
+export function pickNextColor(existingGroups: TabGroup[]): GroupColorId {
+  const usable = GROUP_COLORS.filter(c => c.id !== 'none').map(c => c.id as GroupColorId);
+  const counts  = new Map<GroupColorId, number>(usable.map(id => [id, 0]));
+  for (const g of existingGroups) {
+    const id = g.color as GroupColorId | undefined;
+    if (id && id !== 'none' && counts.has(id)) counts.set(id, counts.get(id)! + 1);
+  }
+  let best = usable[0];
+  for (const id of usable) {
+    if ((counts.get(id) ?? 0) < (counts.get(best) ?? 0)) best = id;
+  }
+  return best;
+}
+
 // Groups with their tabs pre-joined — used in dashboard rendering
 export interface GroupView extends TabGroup {
   tabs: StoredTab[];

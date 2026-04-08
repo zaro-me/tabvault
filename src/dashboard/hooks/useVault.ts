@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { GroupView, StoredTab, TabGroup } from '@/shared/types';
+import { pickNextColor } from '@/shared/types';
 import { parseBackupMarkdown } from '@/shared/import';
 import {
   deleteGroup, deleteTab, getAllGroups, getAllTabs,
@@ -36,7 +37,7 @@ export function useVault() {
     if (orphans.length > 0) {
       let uncategorized = groups.find(g => g.label === 'Uncategorized');
       if (!uncategorized) {
-        uncategorized = { id: uuidv4(), label: 'Uncategorized', keywords: [], tabIds: [], createdAt: Date.now() };
+        uncategorized = { id: uuidv4(), label: 'Uncategorized', keywords: [], tabIds: [], createdAt: Date.now(), color: pickNextColor(groups) };
         groups.push(uncategorized);
         await saveGroup(uncategorized);
       }
@@ -171,7 +172,7 @@ export function useVault() {
 
     if (toGroupId === '__new__') {
       const label    = newGroupLabel?.trim() || 'New group';
-      const newGroup: TabGroup = { id: uuidv4(), label, keywords: [], tabIds: [], createdAt: Date.now() };
+      const newGroup: TabGroup = { id: uuidv4(), label, keywords: [], tabIds: [], createdAt: Date.now(), color: pickNextColor(groups) };
       await saveGroup(newGroup);
       targetGroupId = newGroup.id;
     }
@@ -327,6 +328,9 @@ export function useVault() {
     let totalTabs  = 0;
     let newGroups  = 0;
 
+    // Track all groups (existing + newly created) so colors don't repeat within the import batch
+    const allGroupsSoFar = [...existingGroups];
+
     for (const parsedGroup of parsed) {
       const labelKey = parsedGroup.label.toLowerCase().trim();
 
@@ -338,7 +342,9 @@ export function useVault() {
           keywords: [],
           tabIds: [],
           createdAt: now,
+          color: pickNextColor(allGroupsSoFar),
         };
+        allGroupsSoFar.push(group);
         await saveGroup(group);
         byLabel.set(labelKey, group);
         if (!newOrder.includes(group.id)) newOrder.push(group.id);
@@ -422,12 +428,33 @@ export function useVault() {
     }
   }, [reload]);
 
+  const mergeGroups = useCallback(async (sourceGroupId: string, targetGroupId: string) => {
+    const [tabs, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
+    const sourceGroup = groups.find(g => g.id === sourceGroupId);
+    const targetGroup = groups.find(g => g.id === targetGroupId);
+    if (!sourceGroup || !targetGroup) return;
+
+    const sourceTabs = tabs.filter(t => t.groupId === sourceGroupId);
+
+    // Move all source tabs to target group
+    await Promise.all(sourceTabs.map(t => saveTab({ ...t, groupId: targetGroupId })));
+    await saveGroup({ ...targetGroup, tabIds: [...targetGroup.tabIds, ...sourceTabs.map(t => t.id)] });
+    await deleteGroup(sourceGroupId);
+
+    // Remove source from group order
+    const order = await getGroupOrder();
+    await saveGroupOrder(order.filter(id => id !== sourceGroupId));
+
+    log('move_tab', `Merged group "${sourceGroup.label}" into "${targetGroup.label}" (${sourceTabs.length} tab${sourceTabs.length !== 1 ? 's' : ''})`);
+    await reload();
+  }, [reload]);
+
   return {
     state, reload,
     undoEntry, performUndo, clearUndo,
     restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
-    moveTab, reorderGroups,
+    moveTab, reorderGroups, mergeGroups,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
   };

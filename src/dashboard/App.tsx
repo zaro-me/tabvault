@@ -10,7 +10,7 @@ export default function App() {
   const {
     state, restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
-    moveTab, reorderGroups,
+    moveTab, reorderGroups, mergeGroups,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
     undoEntry, performUndo, clearUndo,
@@ -81,6 +81,7 @@ export default function App() {
             onMoveTab={moveTab}
             onSetGroupColor={setGroupColor}
             onReorderGroups={reorderGroups}
+            onMergeGroups={mergeGroups}
           />
         )}
       </main>
