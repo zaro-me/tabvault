@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { GROUP_COLORS } from '@/shared/types';
 import type { GroupView, StoredTab } from '@/shared/types';
 import { TabCard } from './TabCard';
@@ -17,6 +17,9 @@ interface Props {
   onMoveTab: (tabId: string, fromGroupId: string, toGroupId: string, newLabel?: string) => void;
   onSetColor: (color: string) => void;
   onGroupDrop: (targetGroupId: string, action: GroupDropAction) => void;
+  expandSignal: number;
+  collapseSignal: number;
+  autoExpandTrigger: number;
 }
 
 export function GroupColumn({
@@ -24,8 +27,13 @@ export function GroupColumn({
   onRestoreTab, onDeleteTab,
   onRename, onDelete, onRestoreAll,
   onMoveTab, onSetColor, onGroupDrop,
+  expandSignal, collapseSignal, autoExpandTrigger,
 }: Props) {
   const [collapsed, setCollapsed]            = useState(true);
+
+  useEffect(() => { if (expandSignal      > 0) setCollapsed(false); }, [expandSignal]);
+  useEffect(() => { if (collapseSignal    > 0) setCollapsed(true);  }, [collapseSignal]);
+  useEffect(() => { if (autoExpandTrigger > 0) setCollapsed(false); }, [autoExpandTrigger]);
   const [editing, setEditing]                = useState(false);
   const [labelInput, setLabelInput]          = useState(group.label);
   const [showMenu, setShowMenu]              = useState(false);
@@ -163,31 +171,33 @@ export function GroupColumn({
         {/* Color stripe */}
         {colorBar && <div className={`h-1 w-full rounded-t-xl ${colorBar}`} />}
 
-        {/* Header */}
-        <div className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800/60 border-b border-slate-700/50">
+        {/* Header — entire row is the collapse/expand click target */}
+        <div
+          className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800/60 border-b border-slate-700/50 cursor-pointer select-none"
+          onClick={() => setCollapsed(c => !c)}
+        >
 
           {/* Group drag handle */}
           <div
             draggable
             onDragStart={handleGroupDragStart}
             onDragEnd={handleGroupDragEnd}
+            onClick={e => e.stopPropagation()}
             title="Drag to reorder group"
-            className="text-slate-600 hover:text-slate-400 cursor-grab active:cursor-grabbing transition shrink-0 select-none text-xs px-0.5"
+            className="text-slate-600 hover:text-slate-400 cursor-grab active:cursor-grabbing transition shrink-0 text-xs px-0.5"
           >
             ⠿
           </div>
 
-          <button
-            onClick={() => setCollapsed(c => !c)}
-            className="text-slate-500 hover:text-slate-300 transition text-[10px] w-4 shrink-0"
-          >
+          <span className="text-slate-500 text-[10px] w-4 shrink-0 pointer-events-none">
             {collapsed ? '▶' : '▼'}
-          </button>
+          </span>
 
           {editing ? (
             <input
               autoFocus
               value={labelInput}
+              onClick={e => e.stopPropagation()}
               onChange={e => setLabelInput(e.target.value)}
               onBlur={submitRename}
               onKeyDown={e => {
@@ -197,21 +207,21 @@ export function GroupColumn({
               className="flex-1 bg-slate-700 text-white text-sm font-semibold rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-indigo-500"
             />
           ) : (
-            <button
-              onDoubleClick={() => { setLabelInput(group.label); setEditing(true); }}
+            <span
+              onDoubleClick={e => { e.stopPropagation(); setLabelInput(group.label); setEditing(true); }}
               className="flex-1 text-left text-sm font-semibold text-slate-100 truncate"
               title="Double-click to rename"
             >
               {group.label}
-            </button>
+            </span>
           )}
 
-          <span className="text-[11px] text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded-full tabular-nums shrink-0">
+          <span className="text-[11px] text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded-full tabular-nums shrink-0 pointer-events-none">
             {group.tabs.length}
           </span>
 
           {/* Group menu */}
-          <div className="relative shrink-0">
+          <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
             <button
               onClick={() => { setShowMenu(m => !m); setShowColors(false); setConfirmDelete(false); }}
               className="text-slate-600 hover:text-slate-300 transition text-sm px-0.5"

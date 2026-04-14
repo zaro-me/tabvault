@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Header } from './components/Header';
 import { AssistantBanner } from './components/AssistantBanner';
 import { GroupList } from './components/GroupList';
@@ -13,12 +13,48 @@ export default function App() {
     moveTab, reorderGroups, mergeGroups,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
+    clearVault,
+    expandGroupSignal,
     undoEntry, performUndo, clearUndo,
   } = useVault();
 
   const [search,           setSearch]           = useState('');
   const [hasApiKey,        setHasApiKey]        = useState(false);
   const [dismissedAlerts,  setDismissedAlerts]  = useState<string[]>([]);
+  const [allExpanded,              setAllExpanded]              = useState(false);
+  const [expandSignal,             setExpandSignal]             = useState(0);
+  const [collapseSignal,           setCollapseSignal]           = useState(0);
+  const [perGroupExpandTriggers,   setPerGroupExpandTriggers]   = useState<Record<string, number>>({});
+
+  // Expand the specific group that just received a new tab
+  useEffect(() => {
+    if (!expandGroupSignal) return;
+    setPerGroupExpandTriggers(prev => ({
+      ...prev,
+      [expandGroupSignal.groupId]: expandGroupSignal.seq,
+    }));
+  }, [expandGroupSignal]);
+
+  // Auto-expand groups when search becomes active; auto-collapse when cleared
+  const prevSearchRef = useRef('');
+  useEffect(() => {
+    const prev = prevSearchRef.current;
+    prevSearchRef.current = search;
+    const wasSearching = !!prev.trim();
+    const isSearching  = !!search.trim();
+    if (!wasSearching && isSearching) setExpandSignal(s => s + 1);
+    if (wasSearching  && !isSearching) setCollapseSignal(s => s + 1);
+  }, [search]);
+
+  const handleToggleExpandAll = useCallback(() => {
+    if (allExpanded) {
+      setCollapseSignal(s => s + 1);
+      setAllExpanded(false);
+    } else {
+      setExpandSignal(s => s + 1);
+      setAllExpanded(true);
+    }
+  }, [allExpanded]);
 
   useEffect(() => {
     getSettings().then(s => setHasApiKey(!!s.anthropicApiKey?.trim()));
@@ -59,6 +95,9 @@ export default function App() {
         onDownloadBackup={downloadBackup}
         onClearDuplicates={clearDuplicates}
         onImport={importTabs}
+        onClearVault={clearVault}
+        allExpanded={allExpanded}
+        onToggleExpandAll={handleToggleExpandAll}
         hasApiKey={hasApiKey}
       />
       <main className="flex-1 p-6 max-w-screen-2xl mx-auto w-full">
@@ -82,6 +121,9 @@ export default function App() {
             onSetGroupColor={setGroupColor}
             onReorderGroups={reorderGroups}
             onMergeGroups={mergeGroups}
+            expandSignal={expandSignal}
+            collapseSignal={collapseSignal}
+            perGroupExpandTriggers={perGroupExpandTriggers}
           />
         )}
       </main>

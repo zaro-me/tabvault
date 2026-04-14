@@ -15,6 +15,9 @@ interface Props {
   onSetGroupColor: (groupId: string, color: string) => void;
   onReorderGroups: (newOrder: string[]) => void;
   onMergeGroups: (sourceGroupId: string, targetGroupId: string) => void;
+  expandSignal: number;
+  collapseSignal: number;
+  perGroupExpandTriggers: Record<string, number>;
 }
 
 export function GroupList({
@@ -22,6 +25,7 @@ export function GroupList({
   onRestoreTab, onDeleteTab,
   onRenameGroup, onDeleteGroup, onRestoreGroup,
   onMoveTab, onSetGroupColor, onReorderGroups, onMergeGroups,
+  expandSignal, collapseSignal, perGroupExpandTriggers,
 }: Props) {
   const [pendingMerge, setPendingMerge] = useState<{ sourceId: string; targetId: string } | null>(null);
 
@@ -67,6 +71,9 @@ export function GroupList({
               onMoveTab={onMoveTab}
               onSetColor={color => onSetGroupColor(group.id, color)}
               onGroupDrop={handleGroupDrop}
+              expandSignal={expandSignal}
+              collapseSignal={collapseSignal}
+              autoExpandTrigger={perGroupExpandTriggers[group.id] ?? 0}
             />
           </div>
         ))}

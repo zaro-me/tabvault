@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { GroupView, StoredTab, TabGroup } from '@/shared/types';
 import { pickNextColor } from '@/shared/types';
@@ -27,6 +27,8 @@ export interface UndoEntry {
 export function useVault() {
   const [state, setState]       = useState<VaultState>({ groups: [], totalTabs: 0, loading: true });
   const [undoEntry, setUndoEntry] = useState<UndoEntry | null>(null);
+  const [expandGroupSignal, setExpandGroupSignal] = useState<{ groupId: string; seq: number } | null>(null);
+  const expandSeqRef = useRef(0);
 
   const reload = useCallback(async () => {
     const [tabs, groups, groupOrder] = await Promise.all([getAllTabs(), getAllGroups(), getGroupOrder()]);
@@ -56,8 +58,13 @@ export function useVault() {
 
   useEffect(() => {
     reload();
-    const onMessage = (msg: { type: string }) => {
-      if (msg.type === 'VAULT_UPDATED') reload();
+    const onMessage = (msg: { type: string; groupId?: string }) => {
+      if (msg.type === 'VAULT_UPDATED') {
+        if (msg.groupId) {
+          setExpandGroupSignal({ groupId: msg.groupId, seq: ++expandSeqRef.current });
+        }
+        reload();
+      }
     };
     chrome.runtime.onMessage.addListener(onMessage);
     return () => chrome.runtime.onMessage.removeListener(onMessage);
@@ -428,6 +435,16 @@ export function useVault() {
     }
   }, [reload]);
 
+  const clearVault = useCallback(async () => {
+    const [tabs, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
+    await Promise.all([
+      ...tabs.map(t => deleteTab(t.id)),
+      ...groups.map(g => deleteGroup(g.id)),
+    ]);
+    log('delete_group', `Cleared vault (${tabs.length} tab${tabs.length !== 1 ? 's' : ''}, ${groups.length} group${groups.length !== 1 ? 's' : ''})`);
+    await reload();
+  }, [reload]);
+
   const mergeGroups = useCallback(async (sourceGroupId: string, targetGroupId: string) => {
     const [tabs, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
     const sourceGroup = groups.find(g => g.id === sourceGroupId);
@@ -451,12 +468,14 @@ export function useVault() {
 
   return {
     state, reload,
+    expandGroupSignal,
     undoEntry, performUndo, clearUndo,
     restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
     moveTab, reorderGroups, mergeGroups,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
+    clearVault,
   };
 }
 

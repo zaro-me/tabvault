@@ -2,7 +2,8 @@ import { v4 as uuidv4 } from 'uuid';
 import * as tracker from './idle-tracker';
 import * as db from '@/shared/storage';
 import { assignGroups, assignNewTab, extractDomain } from '@/shared/grouping';
-import { groupTabsWithAI } from '@/shared/ai-grouping';
+import { assignTabWithAI, groupTabsWithAI } from '@/shared/ai-grouping';
+import { pickNextColor } from '@/shared/types';
 import type { IdleEntry, StoredTab, TabGroup } from '@/shared/types';
 
 const HEARTBEAT_ALARM    = 'tabvault-heartbeat';
@@ -356,21 +357,79 @@ async function doParkTab(entry: IdleEntry): Promise<void> {
     pinned:       false,
   };
 
-  const { tab: parkedTab, groups: updatedGroups } = assignNewTab(
-    newTab, existingTabs, existingGroups, settings.groupingSensitivity,
-  );
+  let parkedTab: StoredTab;
+  let updatedGroups: TabGroup[];
+
+  const apiKey = settings.anthropicApiKey?.trim();
+
+  if (apiKey) {
+    // Build concise group summaries so Claude can make an informed decision
+    const groupSummaries = existingGroups.map(g => ({
+      id: g.id,
+      label: g.label,
+      tabSamples: existingTabs
+        .filter(t => t.groupId === g.id)
+        .slice(0, 4)
+        .map(t => `"${t.title}" — ${extractDomain(t.url)}`),
+    }));
+
+    const aiResult = await assignTabWithAI(
+      { index: 0, title: newTab.title, url: newTab.url },
+      groupSummaries,
+      apiKey,
+    ).catch(() => null);
+
+    if (aiResult) {
+      if (aiResult.groupId) {
+        // Place in existing group
+        const group = existingGroups.find(g => g.id === aiResult.groupId)!;
+        parkedTab = { ...newTab, groupId: group.id };
+        updatedGroups = existingGroups.map(g =>
+          g.id === group.id ? { ...g, tabIds: [...g.tabIds, newTab.id] } : g,
+        );
+      } else {
+        // Create a new AI-named group
+        const newGroup: TabGroup = {
+          id:        uuidv4(),
+          label:     aiResult.newGroupLabel ?? newTab.title,
+          keywords:  [],
+          tabIds:    [newTab.id],
+          createdAt: Date.now(),
+          color:     pickNextColor(existingGroups),
+        };
+        parkedTab     = { ...newTab, groupId: newGroup.id };
+        updatedGroups = [...existingGroups, newGroup];
+      }
+    } else {
+      // AI unavailable or failed — fall back to TF-IDF
+      ({ tab: parkedTab, groups: updatedGroups } = assignNewTab(
+        newTab, existingTabs, existingGroups, settings.groupingSensitivity,
+      ));
+    }
+  } else {
+    ({ tab: parkedTab, groups: updatedGroups } = assignNewTab(
+      newTab, existingTabs, existingGroups, settings.groupingSensitivity,
+    ));
+  }
+
+  const groupLabel = updatedGroups.find(g => g.id === parkedTab.groupId)?.label ?? parkedTab.groupId;
 
   await Promise.all([
     db.saveTab(parkedTab),
     ...updatedGroups.map(g => db.saveGroup(g)),
     db.bumpRecentlyArchived(),
+    db.appendLog({
+      type:      'archive_tab',
+      message:   `Archived "${parkedTab.title || parkedTab.url}" → ${groupLabel}`,
+      timestamp: Date.now(),
+    }),
   ]);
 
   tracker.removeTab(entry.tabId);
   try { await chrome.tabs.remove(entry.tabId); } catch { /* already closed */ }
 
   await persistIdleMap();
-  chrome.runtime.sendMessage({ type: 'VAULT_UPDATED' }).catch(() => {});
+  chrome.runtime.sendMessage({ type: 'VAULT_UPDATED', groupId: parkedTab.groupId }).catch(() => {});
 }
 
 // ─── Purge / Snapshot shared helpers ─────────────────────────────────────────
