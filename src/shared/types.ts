@@ -17,6 +17,8 @@ export interface TabGroup {
   tabIds: string[];
   createdAt: number;
   color?: string;
+  /** User-created folders are allowed to remain visible even when empty. */
+  manual?: boolean;
 }
 
 // Represents a live browser tab being monitored by the service worker

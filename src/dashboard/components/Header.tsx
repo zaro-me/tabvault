@@ -11,6 +11,7 @@ interface HeaderProps {
   onDownloadBackup: () => Promise<void>;
   onClearDuplicates: () => Promise<number>;
   onImport: (content: string) => Promise<{ tabs: number; groups: number }>;
+  onCreateGroup: (label: string) => Promise<{ label: string }>;
   onClearVault: () => Promise<void>;
   allExpanded: boolean;
   onToggleExpandAll: () => void;
@@ -51,6 +52,7 @@ function Tip({ text, children }: { text: string; children: ReactNode }) {
 export function Header({
   tabCount, search, onSearchChange,
   onPurge, onSnapshot, onDownloadBackup, onClearDuplicates, onImport,
+  onCreateGroup,
   hasApiKey,
 }: HeaderProps) {
   const [purgeState, setPurgeState] = useState<
@@ -61,6 +63,8 @@ export function Header({
   const [dedupState,   setDedupState]   = useState<'idle' | 'running' | number>('idle');
   const [showLogs,     setShowLogs]     = useState(false);
   const [importState,  setImportState]  = useState<'idle' | 'reading' | { tabs: number; groups: number } | 'error'>('idle');
+  const [folderState,  setFolderState]  = useState<'idle' | 'editing' | 'saving' | { label: string } | 'error'>('idle');
+  const [folderName,   setFolderName]   = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleImportClick() {
@@ -128,6 +132,21 @@ export function Header({
     }
   }
 
+  async function handleCreateFolder(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (folderState === 'saving') return;
+    setFolderState('saving');
+    try {
+      const result = await onCreateGroup(folderName);
+      setFolderName('');
+      setFolderState({ label: result.label });
+      setTimeout(() => setFolderState('idle'), 3500);
+    } catch {
+      setFolderState('error');
+      setTimeout(() => setFolderState('editing'), 2500);
+    }
+  }
+
   const snapLabel  = () => {
     if (snapState === 'snapping')      return 'Saving…';
     if (typeof snapState === 'object') return `✓ ${snapState.saved} tabs saved`;
@@ -188,8 +207,64 @@ export function Header({
             onChange={handleFileChange}
           />
 
-          {/* Row 2: action buttons — order: Snapshot, Backup, Import, Clear dupes, Purge all tabs, Logs */}
+          {/* Row 2: action buttons */}
           <div className="flex items-center gap-2 flex-wrap">
+
+            {folderState === 'editing' || folderState === 'saving' ? (
+              <form
+                onSubmit={handleCreateFolder}
+                className="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1"
+              >
+                <input
+                  autoFocus
+                  value={folderName}
+                  onChange={e => setFolderName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      setFolderName('');
+                      setFolderState('idle');
+                    }
+                  }}
+                  placeholder="Folder name"
+                  disabled={folderState === 'saving'}
+                  className="w-36 bg-transparent text-sm text-slate-100 placeholder-slate-500 focus:outline-none"
+                />
+                <button
+                  type="submit"
+                  disabled={folderState === 'saving'}
+                  className="text-xs font-medium text-indigo-300 hover:text-indigo-200 disabled:opacity-50 transition"
+                >
+                  {folderState === 'saving' ? 'Creating…' : 'Create'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setFolderName(''); setFolderState('idle'); }}
+                  className="text-xs text-slate-500 hover:text-slate-300 transition"
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <Tip text="Create an empty folder so you can manually organize archived tabs.">
+                <button
+                  onClick={() => setFolderState('editing')}
+                  className={`${btnBase} ${
+                    typeof folderState === 'object'
+                      ? 'bg-emerald-900/30 border-emerald-700/60 text-emerald-300'
+                      : folderState === 'error'
+                      ? 'bg-red-900/30 border-red-700/60 text-red-300'
+                      : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-indigo-600 hover:text-indigo-300'
+                  }`}
+                >
+                  {typeof folderState === 'object'
+                    ? `✓ ${folderState.label}`
+                    : folderState === 'error'
+                    ? '⚠ Folder failed'
+                    : '📁 New Folder'}
+                </button>
+              </Tip>
+            )}
 
             <Tip text="Captures all currently open tabs and saves them to the Vault without closing them.">
               <button

@@ -6,7 +6,7 @@ import { DEFAULT_SETTINGS } from './types';
 
 export type LogEntryType =
   | 'backup' | 'purge' | 'snapshot'
-  | 'archive_tab' | 'delete_tab' | 'delete_group'
+  | 'archive_tab' | 'delete_tab' | 'delete_group' | 'create_group'
   | 'move_tab' | 'dedup'
   | 'alert_dismissed';
 

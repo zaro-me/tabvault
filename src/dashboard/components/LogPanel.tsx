@@ -12,6 +12,7 @@ const TYPE_ICON: Record<LogEntryType, string> = {
   purge:           '🧹',
   snapshot:        '📸',
   archive_tab:     '🗄️',
+  create_group:    '📁',
   delete_tab:      '🗑️',
   delete_group:    '🗑️',
   move_tab:        '⇄',

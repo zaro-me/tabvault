@@ -87,8 +87,9 @@ export function useVault() {
   const restoreTab = useCallback(async (tab: StoredTab) => {
     await chrome.tabs.create({ url: tab.url, active: true });
     await deleteTab(tab.id);
-    const remaining = await getAllTabs();
-    if (!remaining.some(t => t.groupId === tab.groupId)) {
+    const [remaining, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
+    const group = groups.find(g => g.id === tab.groupId);
+    if (!group?.manual && !remaining.some(t => t.groupId === tab.groupId)) {
       await deleteGroup(tab.groupId);
     }
     await reload();
@@ -102,7 +103,7 @@ export function useVault() {
     await deleteTab(tabId);
     const remaining = await getAllTabs();
     const groupNowEmpty = !remaining.some(t => t.groupId === groupId);
-    if (groupNowEmpty) await deleteGroup(groupId);
+    if (groupNowEmpty && !group?.manual) await deleteGroup(groupId);
 
     if (tab) {
       log('delete_tab', `Deleted tab: "${tab.title || tab.url}"`);
@@ -134,6 +135,44 @@ export function useVault() {
       await saveGroup({ ...group, label });
       await reload();
     }
+  }, [reload]);
+
+  const createGroup = useCallback(async (label: string): Promise<{ groupId: string; label: string }> => {
+    const [groups, groupOrder] = await Promise.all([getAllGroups(), getGroupOrder()]);
+    const previousOrder = [...groupOrder];
+    const trimmed = label.trim();
+    const finalLabel = uniqueGroupLabel(trimmed || 'New folder', groups);
+    const group: TabGroup = {
+      id:        uuidv4(),
+      label:     finalLabel,
+      keywords:  [],
+      tabIds:    [],
+      createdAt: Date.now(),
+      color:     pickNextColor(groups),
+      manual:    true,
+    };
+
+    await saveGroup(group);
+    const currentOrder = groupOrder.length > 0
+      ? groupOrder
+      : groups.slice().sort((a, b) => b.createdAt - a.createdAt).map(g => g.id);
+    await saveGroupOrder([group.id, ...currentOrder.filter(id => id !== group.id)]);
+
+    log('create_group', `Created folder "${group.label}"`);
+    setUndoEntry({
+      label: `Created folder "${group.label}"`,
+      restore: async () => {
+        const tabs = await getAllTabs();
+        if (!tabs.some(t => t.groupId === group.id)) {
+          await deleteGroup(group.id);
+          await saveGroupOrder(previousOrder);
+        }
+      },
+    });
+
+    setExpandGroupSignal({ groupId: group.id, seq: ++expandSeqRef.current });
+    await reload();
+    return { groupId: group.id, label: group.label };
   }, [reload]);
 
   const deleteGroupWithTabs = useCallback(async (groupId: string) => {
@@ -188,7 +227,7 @@ export function useVault() {
     const oldGroup = groups.find(g => g.id === fromGroupId);
     if (oldGroup) {
       const updatedOld = { ...oldGroup, tabIds: oldGroup.tabIds.filter(id => id !== tabId) };
-      if (updatedOld.tabIds.length === 0) await deleteGroup(fromGroupId);
+      if (updatedOld.tabIds.length === 0 && !oldGroup.manual) await deleteGroup(fromGroupId);
       else await saveGroup(updatedOld);
     }
 
@@ -215,7 +254,7 @@ export function useVault() {
         const tg = latestGroups.find(g => g.id === targetGroupId);
         if (tg) {
           const updated = { ...tg, tabIds: tg.tabIds.filter(id => id !== tabId) };
-          if (updated.tabIds.length === 0) await deleteGroup(targetGroupId);
+          if (updated.tabIds.length === 0 && !tg.manual) await deleteGroup(targetGroupId);
           else await saveGroup(updated);
         }
 
@@ -308,7 +347,7 @@ export function useVault() {
     // Clean up now-empty groups
     const remaining = await getAllTabs();
     const occupied  = new Set(remaining.map(t => t.groupId));
-    await Promise.all(groups.filter(g => !occupied.has(g.id)).map(g => deleteGroup(g.id)));
+    await Promise.all(groups.filter(g => !g.manual && !occupied.has(g.id)).map(g => deleteGroup(g.id)));
 
     await reload();
     return toDelete.length;
@@ -472,7 +511,7 @@ export function useVault() {
     undoEntry, performUndo, clearUndo,
     restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
-    moveTab, reorderGroups, mergeGroups,
+    createGroup, moveTab, reorderGroups, mergeGroups,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
     clearVault,
@@ -488,7 +527,7 @@ function buildGroupViews(
   for (const tab of tabs) {
     groupMap.get(tab.groupId)?.tabs.push(tab);
   }
-  const views = [...groupMap.values()].filter(g => g.tabs.length > 0);
+  const views = [...groupMap.values()];
 
   if (groupOrder.length > 0) {
     const orderIndex = new Map(groupOrder.map((id, i) => [id, i]));
@@ -503,4 +542,13 @@ function buildGroupViews(
   }
 
   return views;
+}
+
+function uniqueGroupLabel(label: string, groups: TabGroup[]): string {
+  const existing = new Set(groups.map(g => g.label.trim().toLowerCase()));
+  if (!existing.has(label.toLowerCase())) return label;
+
+  let suffix = 2;
+  while (existing.has(`${label} ${suffix}`.toLowerCase())) suffix++;
+  return `${label} ${suffix}`;
 }

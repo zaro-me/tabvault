@@ -256,7 +256,12 @@ export function GroupColumn({
                     <>
                       <button
                         onClick={() => onRestoreAll()}
-                        className="w-full text-left px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 transition"
+                        disabled={group.tabs.length === 0}
+                        className={`w-full text-left px-3 py-1.5 text-sm transition ${
+                          group.tabs.length === 0
+                            ? 'text-slate-600 cursor-not-allowed'
+                            : 'text-slate-200 hover:bg-slate-700'
+                        }`}
                       >
                         ↩ Restore all tabs
                       </button>
@@ -278,7 +283,9 @@ export function GroupColumn({
                       <div className="border-t border-slate-700 my-1" />
                       {confirmDelete ? (
                         <div className="px-3 py-1.5">
-                          <p className="text-xs text-slate-400 mb-1.5">Delete {group.tabs.length} tabs?</p>
+                          <p className="text-xs text-slate-400 mb-1.5">
+                            {group.tabs.length === 0 ? 'Delete folder?' : `Delete ${group.tabs.length} tabs?`}
+                          </p>
                           <div className="flex gap-2">
                             <button onClick={() => { onDelete(); setShowMenu(false); }} className="text-xs text-red-400 hover:text-red-300 font-medium transition">Confirm</button>
                             <button onClick={() => setConfirmDelete(false)} className="text-xs text-slate-500 hover:text-slate-300 transition">Cancel</button>
@@ -303,16 +310,22 @@ export function GroupColumn({
         {/* Tab list */}
         {!collapsed && (
           <div className="divide-y divide-slate-800/50 rounded-b-xl overflow-hidden">
-            {sortedTabs.map(tab => (
-              <TabCard
-                key={tab.id}
-                tab={tab}
-                allGroups={allGroups}
-                onRestore={() => onRestoreTab(tab)}
-                onDelete={() => onDeleteTab(tab.id, tab.groupId)}
-                onMove={(toGroupId, newLabel) => onMoveTab(tab.id, tab.groupId, toGroupId, newLabel)}
-              />
-            ))}
+            {sortedTabs.length === 0 ? (
+              <div className="px-3 py-5 text-center text-xs text-slate-500">
+                Drop tabs here or move them from another folder.
+              </div>
+            ) : (
+              sortedTabs.map(tab => (
+                <TabCard
+                  key={tab.id}
+                  tab={tab}
+                  allGroups={allGroups}
+                  onRestore={() => onRestoreTab(tab)}
+                  onDelete={() => onDeleteTab(tab.id, tab.groupId)}
+                  onMove={(toGroupId, newLabel) => onMoveTab(tab.id, tab.groupId, toGroupId, newLabel)}
+                />
+              ))
+            )}
           </div>
         )}
       </div>

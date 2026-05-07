@@ -12,6 +12,7 @@ export default function App() {
     state, restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
     moveTab, reorderGroups, mergeGroups,
+    createGroup,
     purgeAll, snapshotAll, downloadBackup,
     setGroupColor, clearDuplicates, importTabs,
     clearVault,
@@ -96,6 +97,7 @@ export default function App() {
         onDownloadBackup={downloadBackup}
         onClearDuplicates={clearDuplicates}
         onImport={importTabs}
+        onCreateGroup={createGroup}
         onClearVault={clearVault}
         allExpanded={allExpanded}
         onToggleExpandAll={handleToggleExpandAll}
