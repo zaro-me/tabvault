@@ -1,3 +1,5 @@
+import { vi } from 'vitest';
+
 export const chromeMock = {
   storage: {
     local: {

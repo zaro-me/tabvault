@@ -5,6 +5,7 @@ import { GroupList } from './components/GroupList';
 import { UndoToast } from './components/UndoToast';
 import { useVault } from './hooks/useVault';
 import { getSettings, getDismissedAlerts, saveDismissedAlerts, appendLog } from '@/shared/storage';
+import { detectAIProvider } from '@/shared/ai-provider';
 
 export default function App() {
   const {
@@ -57,7 +58,7 @@ export default function App() {
   }, [allExpanded]);
 
   useEffect(() => {
-    getSettings().then(s => setHasApiKey(!!s.anthropicApiKey?.trim()));
+    getSettings().then(s => setHasApiKey(!!detectAIProvider(s.llmApiKey)));
     getDismissedAlerts().then(setDismissedAlerts);
   }, []);
 

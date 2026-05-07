@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getSettings, saveSettings } from '@/shared/storage';
 import { DEFAULT_SETTINGS, type VaultSettings } from '@/shared/types';
+import { AI_PROVIDER_LABEL, detectAIProvider } from '@/shared/ai-provider';
 
 export default function Options() {
   const [settings, setSettings]           = useState<VaultSettings>(DEFAULT_SETTINGS);
@@ -31,6 +32,8 @@ export default function Options() {
 
   const idleHours = settings.idleThresholdMs / 3_600_000;
   const graceMin  = settings.gracePeriodMs  / 60_000;
+  const trimmedApiKey = settings.llmApiKey?.trim() ?? '';
+  const detectedProvider = detectAIProvider(trimmedApiKey);
 
   return (
     <div className="max-w-xl mx-auto py-12 px-6">
@@ -68,15 +71,15 @@ export default function Options() {
 
         {/* AI / Purge */}
         <SettingCard
-          label="Anthropic API Key"
-          hint={<>Powers the <strong>Purge & sort with AI</strong> button — Claude groups your tabs by topic. Leave blank to use the built-in TF-IDF grouping instead. Get a key at <span className="text-indigo-400">console.anthropic.com</span>.</>}
+          label="LLM API Key"
+          hint={<>Powers AI grouping for Snapshot and Purge. Paste an Anthropic key or OpenAI key; TabVault detects the provider from the key format. Leave blank to use built-in TF-IDF grouping.</>}
         >
           <div className="relative">
             <input
               type={showKey ? 'text' : 'password'}
-              placeholder="sk-ant-..."
-              value={settings.anthropicApiKey ?? ''}
-              onChange={e => setSettings(s => ({ ...s, anthropicApiKey: e.target.value }))}
+              placeholder="sk-ant-... or sk-proj-..."
+              value={settings.llmApiKey ?? ''}
+              onChange={e => setSettings(s => ({ ...s, llmApiKey: e.target.value, anthropicApiKey: undefined }))}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 pr-10 text-sm font-mono focus:outline-none focus:border-indigo-500 transition"
             />
             <button
@@ -86,9 +89,22 @@ export default function Options() {
               {showKey ? 'hide' : 'show'}
             </button>
           </div>
+          <p className={`mt-2 text-xs ${
+            !trimmedApiKey
+              ? 'text-slate-500'
+              : detectedProvider
+              ? 'text-emerald-400'
+              : 'text-red-400'
+          }`}>
+            {!trimmedApiKey
+              ? 'No AI provider configured.'
+              : detectedProvider
+              ? `Detected provider: ${AI_PROVIDER_LABEL[detectedProvider]}.`
+              : 'Unrecognized key format. Use an Anthropic sk-ant- key or an OpenAI sk- key.'}
+          </p>
           <p className="mt-2 text-xs text-amber-500/80 flex items-start gap-1.5">
             <span className="shrink-0 mt-0.5">⚠️</span>
-            <span>This key is stored locally in plaintext in your browser profile. Set a spending cap at <span className="text-amber-400">console.anthropic.com</span> to limit exposure.</span>
+            <span>This key is stored locally in plaintext in your browser profile. Set a provider-side spending cap to limit exposure.</span>
           </p>
         </SettingCard>
 

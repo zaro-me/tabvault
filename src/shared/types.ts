@@ -37,6 +37,8 @@ export interface VaultSettings {
   gracePeriodMs: number;
   ignoredDomains: string[];
   groupingSensitivity: 'low' | 'medium' | 'high';
+  llmApiKey?: string;
+  /** @deprecated Migrated to llmApiKey. Kept so older saved settings load cleanly. */
   anthropicApiKey?: string;
   /** When false (default), tabs are archived silently with no notification or grace period. */
   notificationsEnabled: boolean;

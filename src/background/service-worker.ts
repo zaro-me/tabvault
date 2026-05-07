@@ -3,6 +3,7 @@ import * as tracker from './idle-tracker';
 import * as db from '@/shared/storage';
 import { assignGroups, assignNewTab, extractDomain } from '@/shared/grouping';
 import { assignTabWithAI, groupTabsWithAI } from '@/shared/ai-grouping';
+import { detectAIProvider } from '@/shared/ai-provider';
 import { pickNextColor } from '@/shared/types';
 import type { IdleEntry, StoredTab, TabGroup } from '@/shared/types';
 
@@ -44,33 +45,40 @@ async function initAlarm() {
 }
 
 function initContextMenu() {
+  type FirefoxGlobal = typeof globalThis & {
+    browser?: {
+      menus?: {
+        removeAll: (cb?: () => void) => void;
+        create: (props: object) => void;
+      };
+    };
+  };
+
   // Firefox exposes a native `browser` global; Chrome only has `chrome`.
   // Firefox's chrome.contextMenus shim strips the 'tab' context before
   // passing it to the underlying browser.menus, so we must use browser.menus
   // directly in Firefox to get the tab-strip right-click menu working.
-  const ffMenus = (globalThis as any).browser?.menus as {
-    removeAll: (cb?: () => void) => void;
-    create: (props: object) => void;
-  } | undefined;
+  const ffMenus = (globalThis as FirefoxGlobal).browser?.menus;
 
-  const items = [
+  const items: Array<Omit<chrome.contextMenus.CreateProperties, 'contexts'>> = [
     { id: 'tv-pin',      title: '📌 Pin tab (never archive)' },
     { id: 'tv-unpin',    title: '🔓 Unpin tab' },
     { id: 'tv-sep',      type: 'separator' },
     { id: 'tv-park-now', title: '🗄️ Archive tab to vault' },
   ];
-  const contexts = ['page', 'tab'];
+  const firefoxContexts = ['page', 'tab'];
+  const chromeContexts: chrome.contextMenus.ContextType[] = ['page'];
 
   if (ffMenus) {
     ffMenus.removeAll(() => {
-      for (const item of items) ffMenus.create({ ...item, contexts });
+      for (const item of items) ffMenus.create({ ...item, contexts: firefoxContexts });
     });
   } else {
     chrome.contextMenus.removeAll(() => {
       for (const item of items) {
         chrome.contextMenus.create({
           ...item,
-          contexts: contexts as chrome.contextMenus.ContextType[],
+          contexts: chromeContexts,
         });
       }
     });
@@ -360,10 +368,11 @@ async function doParkTab(entry: IdleEntry): Promise<void> {
   let parkedTab: StoredTab;
   let updatedGroups: TabGroup[];
 
-  const apiKey = settings.anthropicApiKey?.trim();
+  const apiKey = settings.llmApiKey?.trim();
+  const provider = detectAIProvider(apiKey);
 
-  if (apiKey) {
-    // Build concise group summaries so Claude can make an informed decision
+  if (apiKey && provider) {
+    // Build concise group summaries so the selected AI provider can make an informed decision
     const groupSummaries = existingGroups.map(g => ({
       id: g.id,
       label: g.label,
@@ -529,9 +538,10 @@ async function assignUngrouped(
   let ungroupedAssigned: StoredTab[];
   let allGroups: TabGroup[];
 
-  const apiKey = settings.anthropicApiKey?.trim();
+  const apiKey = settings.llmApiKey?.trim();
+  const provider = detectAIProvider(apiKey);
 
-  if (apiKey && ungroupedNew.length > 0) {
+  if (apiKey && provider && ungroupedNew.length > 0) {
     const aiInput  = ungroupedNew.map((t, i) => ({ index: i, title: t.title || '', url: t.url || '' }));
     const aiResult = await groupTabsWithAI(aiInput, apiKey).catch((err: unknown) => {
       aiError = err instanceof Error ? err.message : 'Unknown error';
@@ -560,6 +570,13 @@ async function assignUngrouped(
       ungroupedAssigned = result.tabs.filter(t => ungroupedNew.some(n => n.id === t.id));
       allGroups = [...result.groups, ...preGroups];
     }
+  } else if (apiKey && !provider) {
+    aiError = 'Unsupported AI API key format';
+    const result = ungroupedNew.length > 0
+      ? assignGroups([...existingTabs, ...ungroupedSpread], settings.groupingSensitivity, existingGroups)
+      : { tabs: [], groups: existingGroups };
+    ungroupedAssigned = result.tabs.filter(t => ungroupedNew.some(n => n.id === t.id));
+    allGroups = [...result.groups, ...preGroups];
   } else {
     const result = ungroupedNew.length > 0
       ? assignGroups([...existingTabs, ...ungroupedSpread], settings.groupingSensitivity, existingGroups)

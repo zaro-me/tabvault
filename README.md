@@ -18,7 +18,7 @@ TabVault is neither. It's a living archive of things you were actually looking a
 
 - **Automatic idle detection** — tabs you haven't touched in a configurable window (default: 2 hours) enter a grace period with a notification countdown, then get parked automatically
 - **Smart grouping** — three-pass algorithm: domain clustering → TF-IDF cosine similarity on titles/URLs → time proximity fallback
-- **AI grouping** — optional Claude API key for smarter semantic grouping
+- **AI grouping** — optional Anthropic or OpenAI API key for smarter semantic grouping
 - **Vault dashboard** — pinned tab that always stays open; shows all parked tabs in collapsible group columns
 - **Drag & drop** — move tabs between groups, reorder groups by priority
 - **Undo** — every destructive action (delete, move, dedup) is reversible with a one-click undo toast
@@ -100,7 +100,7 @@ Once installed, TabVault pins a **Vault tab** automatically. That tab is your da
 
 ### Optional: AI Grouping
 
-Add a Claude API key in **Options** (click the extension icon → Options). When set, Purge and Snapshot will use Claude to group tabs by semantic meaning instead of the built-in TF-IDF algorithm.
+Add an Anthropic or OpenAI API key in **Options** (click the extension icon → Options). TabVault detects the provider from the key format (`sk-ant-...` for Anthropic, `sk-...` for OpenAI). When set, Purge and Snapshot will use AI to group tabs by semantic meaning instead of the built-in TF-IDF algorithm.
 
 ---
 
@@ -146,7 +146,8 @@ src/
     ├── types.ts              # StoredTab, TabGroup, VaultSettings, etc.
     ├── storage.ts            # IndexedDB (tabs, groups) + chrome.storage.local
     ├── grouping.ts           # TF-IDF cosine similarity grouping (pure functions)
-    ├── ai-grouping.ts        # Claude API grouping (fallback to TF-IDF)
+    ├── ai-provider.ts        # API key provider detection
+    ├── ai-grouping.ts        # Anthropic/OpenAI grouping (fallback to TF-IDF)
     ├── backup.ts             # Markdown export
     └── import.ts             # Markdown import parser
 ```

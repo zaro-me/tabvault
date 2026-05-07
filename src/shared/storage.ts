@@ -114,11 +114,18 @@ export async function deleteGroup(id: string): Promise<void> {
 
 export async function getSettings(): Promise<VaultSettings> {
   const result = await chrome.storage.local.get('settings');
-  return { ...DEFAULT_SETTINGS, ...(result.settings as Partial<VaultSettings> ?? {}) };
+  const saved = result.settings as Partial<VaultSettings> | undefined;
+  const settings = { ...DEFAULT_SETTINGS, ...(saved ?? {}) };
+  return {
+    ...settings,
+    llmApiKey: settings.llmApiKey ?? settings.anthropicApiKey,
+  };
 }
 
 export async function saveSettings(settings: VaultSettings): Promise<void> {
-  await chrome.storage.local.set({ settings });
+  const nextSettings = { ...settings };
+  delete nextSettings.anthropicApiKey;
+  await chrome.storage.local.set({ settings: nextSettings });
 }
 
 // --- Group order (chrome.storage.local) ---

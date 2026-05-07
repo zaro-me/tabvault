@@ -11,6 +11,7 @@ const TYPE_ICON: Record<LogEntryType, string> = {
   backup:          '⬇',
   purge:           '🧹',
   snapshot:        '📸',
+  archive_tab:     '🗄️',
   delete_tab:      '🗑️',
   delete_group:    '🗑️',
   move_tab:        '⇄',

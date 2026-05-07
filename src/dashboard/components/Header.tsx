@@ -11,6 +11,9 @@ interface HeaderProps {
   onDownloadBackup: () => Promise<void>;
   onClearDuplicates: () => Promise<number>;
   onImport: (content: string) => Promise<{ tabs: number; groups: number }>;
+  onClearVault: () => Promise<void>;
+  allExpanded: boolean;
+  onToggleExpandAll: () => void;
   hasApiKey: boolean;
 }
 
@@ -86,7 +89,7 @@ export function Header({
     if (importState === 'reading') return 'Importing…';
     if (importState === 'error')   return '⚠ Import failed';
     if (typeof importState === 'object') {
-      const { tabs, groups } = importState;
+      const { tabs } = importState;
       return `✓ ${tabs} tab${tabs !== 1 ? 's' : ''} imported`;
     }
     return '📥 Import';
