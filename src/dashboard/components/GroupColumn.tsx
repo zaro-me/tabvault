@@ -13,7 +13,7 @@ interface Props {
   onDeleteTab: (tabId: string, groupId: string) => void;
   onRename: (label: string) => void;
   onDelete: () => void;
-  onRestoreAll: () => void;
+  onRestoreAll: () => Promise<void>;
   onMoveTab: (tabId: string, fromGroupId: string, toGroupId: string, newLabel?: string) => void;
   onSetColor: (color: string) => void;
   onGroupDrop: (targetGroupId: string, action: GroupDropAction) => void;
@@ -39,6 +39,9 @@ export function GroupColumn({
   const [showMenu, setShowMenu]              = useState(false);
   const [showColors, setShowColors]          = useState(false);
   const [confirmDelete, setConfirmDelete]    = useState(false);
+  const [confirmRestore, setConfirmRestore]  = useState(false);
+  const [restoring, setRestoring]            = useState(false);
+  const [restoreError, setRestoreError]      = useState(false);
   const [isDragOver, setIsDragOver]          = useState(false);
   const [groupDropAction, setGroupDropAction] = useState<GroupDropAction | null>(null);
 
@@ -138,6 +141,22 @@ export function GroupColumn({
     setEditing(false);
   }
 
+  async function handleRestoreAll() {
+    if (group.tabs.length > 10 && !confirmRestore) {
+      setConfirmRestore(true);
+      return;
+    }
+    setRestoring(true);
+    setRestoreError(false);
+    try {
+      await onRestoreAll();
+      setShowMenu(false);
+    } catch {
+      setRestoring(false);
+      setRestoreError(true);
+    }
+  }
+
   const sortedTabs = useMemo(
     () => group.tabs.slice().sort((a, b) => b.parkedAt - a.parkedAt),
     [group.tabs],
@@ -175,6 +194,16 @@ export function GroupColumn({
         <div
           className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800/60 border-b border-slate-700/50 cursor-pointer select-none"
           onClick={() => setCollapsed(c => !c)}
+          role="button"
+          tabIndex={0}
+          aria-expanded={!collapsed}
+          onKeyDown={e => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setCollapsed(c => !c);
+            }
+          }}
         >
 
           {/* Group drag handle */}
@@ -223,7 +252,8 @@ export function GroupColumn({
           {/* Group menu */}
           <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
             <button
-              onClick={() => { setShowMenu(m => !m); setShowColors(false); setConfirmDelete(false); }}
+              onClick={() => { setShowMenu(m => !m); setShowColors(false); setConfirmDelete(false); setConfirmRestore(false); setRestoreError(false); }}
+              aria-label={`Actions for ${group.label}`}
               className="text-slate-600 hover:text-slate-300 transition text-sm px-0.5"
             >
               ⋯
@@ -255,16 +285,25 @@ export function GroupColumn({
                   ) : (
                     <>
                       <button
-                        onClick={() => onRestoreAll()}
-                        disabled={group.tabs.length === 0}
+                        onClick={handleRestoreAll}
+                        disabled={group.tabs.length === 0 || restoring}
                         className={`w-full text-left px-3 py-1.5 text-sm transition ${
                           group.tabs.length === 0
                             ? 'text-slate-600 cursor-not-allowed'
                             : 'text-slate-200 hover:bg-slate-700'
                         }`}
                       >
-                        ↩ Restore all tabs
+                        {restoring
+                          ? 'Opening tabs…'
+                          : confirmRestore
+                          ? `⚠ Open ${group.tabs.length} tabs?`
+                          : '↩ Restore all tabs'}
                       </button>
+                      {restoreError && (
+                        <p className="px-3 pb-1 text-xs text-red-400">
+                          Could not restore every tab. Nothing unopened was removed.
+                        </p>
+                      )}
                       <button
                         onClick={() => { setEditing(true); setLabelInput(group.label); setShowMenu(false); }}
                         className="w-full text-left px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 transition"

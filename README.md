@@ -16,10 +16,11 @@ TabVault is neither. It's a living archive of things you were actually looking a
 
 ## Features
 
-- **Automatic idle detection** — tabs you haven't touched in a configurable window (default: 2 hours) enter a grace period with a notification countdown, then get parked automatically
+- **Automatic idle detection** — tabs you haven't touched in a configurable window (default: 2 hours) are parked silently, or after an optional notification countdown
 - **Smart grouping** — three-pass algorithm: domain clustering → TF-IDF cosine similarity on titles/URLs → time proximity fallback
 - **AI grouping** — optional Anthropic or OpenAI API key for smarter semantic grouping
 - **Vault dashboard** — pinned tab that always stays open; shows all parked tabs in collapsible group columns
+- **Safety controls** — browser-pinned tabs and ignored domains are never archived automatically
 - **Drag & drop** — move tabs between groups, reorder groups by priority
 - **Undo** — every destructive action (delete, move, dedup) is reversible with a one-click undo toast
 - **Deduplication** — find and remove duplicate URLs across all groups; group order determines which copy is kept
@@ -36,7 +37,7 @@ TabVault is neither. It's a living archive of things you were actually looking a
 ### Prerequisites
 
 ```bash
-node >= 18
+node >= 20.19 (or >= 22.12)
 npm >= 9
 ```
 

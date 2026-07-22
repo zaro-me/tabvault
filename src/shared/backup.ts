@@ -2,8 +2,9 @@ import type { StoredTab, TabGroup } from './types';
 
 const BACKUP_FILENAME = 'tabvault-backup.md';
 const AUTO_THROTTLE_MS = 5 * 60 * 1000; // auto-backup at most once per 5 minutes
+const AUTO_BACKUP_KEY = 'lastAutoBackupAt';
 
-let lastAutoBackupAt = 0;
+let autoBackupPromise: Promise<void> | null = null;
 
 /**
  * Auto-backup: throttled, called on every vault reload.
@@ -11,10 +12,20 @@ let lastAutoBackupAt = 0;
  */
 export async function writeBackup(tabs: StoredTab[], groups: TabGroup[]): Promise<void> {
   if (tabs.length === 0) return;
-  const now = Date.now();
-  if (now - lastAutoBackupAt < AUTO_THROTTLE_MS) return;
-  lastAutoBackupAt = now;
-  await download(tabs, groups);
+  if (autoBackupPromise) return autoBackupPromise;
+
+  autoBackupPromise = (async () => {
+    const result = await chrome.storage.local.get(AUTO_BACKUP_KEY);
+    const lastAutoBackupAt = Number(result[AUTO_BACKUP_KEY]) || 0;
+    const now = Date.now();
+    if (now - lastAutoBackupAt < AUTO_THROTTLE_MS) return;
+    await download(tabs, groups);
+    await chrome.storage.local.set({ [AUTO_BACKUP_KEY]: now });
+  })().finally(() => {
+    autoBackupPromise = null;
+  });
+
+  return autoBackupPromise;
 }
 
 /**
@@ -23,8 +34,8 @@ export async function writeBackup(tabs: StoredTab[], groups: TabGroup[]): Promis
  */
 export async function downloadBackupNow(tabs: StoredTab[], groups: TabGroup[]): Promise<void> {
   if (tabs.length === 0) return;
-  lastAutoBackupAt = Date.now(); // reset throttle so auto doesn't fire right after
   await download(tabs, groups);
+  await chrome.storage.local.set({ [AUTO_BACKUP_KEY]: Date.now() });
 }
 
 async function download(tabs: StoredTab[], groups: TabGroup[]): Promise<void> {
@@ -46,7 +57,7 @@ async function download(tabs: StoredTab[], groups: TabGroup[]): Promise<void> {
 
 // ── Markdown generation ───────────────────────────────────────────────────────
 
-function generateMarkdown(tabs: StoredTab[], groups: TabGroup[]): string {
+export function generateMarkdown(tabs: StoredTab[], groups: TabGroup[]): string {
   const now      = new Date().toLocaleString();
   const groupMap = new Map(groups.map(g => [g.id, g]));
 
@@ -78,7 +89,7 @@ function generateMarkdown(tabs: StoredTab[], groups: TabGroup[]): string {
     for (const tab of groupTabs.sort((a, b) => b.parkedAt - a.parkedAt)) {
       const date  = new Date(tab.parkedAt).toLocaleDateString();
       const title = escapeMarkdown(tab.title || tab.url);
-      md += `- [${title}](${tab.url}) — *archived ${date}*\n`;
+      md += `- [${title}](<${tab.url.replace(/>/g, '%3E')}>) — *archived ${date}*\n`;
     }
     md += '\n';
   }
@@ -87,5 +98,5 @@ function generateMarkdown(tabs: StoredTab[], groups: TabGroup[]): string {
 }
 
 function escapeMarkdown(text: string): string {
-  return text.replace(/[[\]]/g, '\\$&');
+  return text.replace(/\\/g, '\\\\').replace(/[[\]]/g, '\\$&');
 }

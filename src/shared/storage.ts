@@ -18,13 +18,17 @@ export interface LogEntry {
 }
 
 const MAX_LOG = 500;
+let logQueue: Promise<void> = Promise.resolve();
 
 export async function appendLog(entry: Omit<LogEntry, 'id'>): Promise<void> {
-  const result = await chrome.storage.local.get('vaultLog');
-  const log = (result.vaultLog as LogEntry[]) ?? [];
-  log.unshift({ ...entry, id: crypto.randomUUID() });
-  if (log.length > MAX_LOG) log.length = MAX_LOG;
-  await chrome.storage.local.set({ vaultLog: log });
+  logQueue = logQueue.catch(() => undefined).then(async () => {
+    const result = await chrome.storage.local.get('vaultLog');
+    const log = (result.vaultLog as LogEntry[]) ?? [];
+    log.unshift({ ...entry, id: crypto.randomUUID() });
+    if (log.length > MAX_LOG) log.length = MAX_LOG;
+    await chrome.storage.local.set({ vaultLog: log });
+  });
+  return logQueue;
 }
 
 export async function getLog(): Promise<LogEntry[]> {
@@ -108,6 +112,13 @@ export async function getAllGroups(): Promise<TabGroup[]> {
 export async function deleteGroup(id: string): Promise<void> {
   const db = await getDB();
   await db.delete('groups', id);
+}
+
+export async function clearVaultData(): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['tabs', 'groups'], 'readwrite');
+  await Promise.all([tx.objectStore('tabs').clear(), tx.objectStore('groups').clear()]);
+  await tx.done;
 }
 
 // --- Settings (chrome.storage.local) ---

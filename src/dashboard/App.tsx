@@ -63,18 +63,25 @@ export default function App() {
     getDismissedAlerts().then(setDismissedAlerts);
   }, []);
 
-  const handleDismissAlert = useCallback(async (key: string, text: string) => {
-    const next = [...dismissedAlerts, key];
-    setDismissedAlerts(next);
-    await saveDismissedAlerts(next);
+  const handleDismissAlert = useCallback((key: string, text: string) => {
+    setDismissedAlerts(current => {
+      const next = current.includes(key) ? current : [...current, key];
+      saveDismissedAlerts(next).catch(() => {});
+      return next;
+    });
     appendLog({ type: 'alert_dismissed', message: `Dismissed alert: ${text}`, timestamp: Date.now() }).catch(() => {});
-  }, [dismissedAlerts]);
+  }, []);
 
   const visibleGroups = useMemo(() => {
     if (!search.trim()) return state.groups;
-    const q = search.toLowerCase();
+    const q = search.trim().toLowerCase();
     return state.groups
-      .map(g => ({ ...g, tabs: g.tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) }))
+      .map(g => ({
+        ...g,
+        tabs: g.label.toLowerCase().includes(q)
+          ? g.tabs
+          : g.tabs.filter(t => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)),
+      }))
       .filter(g => g.tabs.length > 0);
   }, [state.groups, search]);
 

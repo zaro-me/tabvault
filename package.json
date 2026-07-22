@@ -1,6 +1,6 @@
 {
   "name": "tabvault",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "dev:firefox": "vite build --watch --mode firefox",
     "build": "vite build",
     "build:firefox": "vite build --mode firefox",
-    "lint": "tsc --noEmit && eslint src --ext .ts,.tsx",
+    "lint": "tsc --noEmit && eslint src",
     "test": "vitest run",
     "generate-icons": "node scripts/generate-icons.mjs"
   },
@@ -16,28 +16,37 @@
     "idb": "^8.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "uuid": "^10.0.0"
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.2.0",
     "@testing-library/react": "^16.0.0",
     "@testing-library/user-event": "^14.5.2",
+    "@eslint/js": "^10.0.1",
     "@types/chrome": "^0.0.268",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
-    "@types/uuid": "^10.0.0",
     "@types/webextension-polyfill": "^0.12.5",
-    "@typescript-eslint/eslint-plugin": "^7.16.0",
-    "@typescript-eslint/parser": "^7.16.0",
-    "@vitejs/plugin-react": "^4.3.1",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.19",
-    "eslint": "^8.57.0",
+    "eslint": "^10.0.1",
+    "globals": "^16.5.0",
     "jsdom": "^24.1.1",
-    "postcss": "^8.4.38",
+    "postcss": "^8.5.10",
     "tailwindcss": "^3.4.6",
-    "typescript": "^5.5.3",
-    "vite": "^5.3.4",
-    "vite-plugin-web-extension": "^4.1.1",
-    "vitest": "^2.0.3"
+    "typescript": "^6.0.3",
+    "vite": "^8.1.5",
+    "vite-plugin-web-extension": "^4.5.1",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "adm-zip": "^0.6.0",
+    "shell-quote": "^1.10.0",
+    "tmp": "^0.2.7",
+    "node-notifier": {
+      "uuid": "^11.1.1"
+    }
   }
 }

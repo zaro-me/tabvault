@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getSettings, saveSettings } from '@/shared/storage';
 import { DEFAULT_SETTINGS, type VaultSettings } from '@/shared/types';
 import { AI_PROVIDER_LABEL, detectAIProvider } from '@/shared/ai-provider';
+import { normalizeDomain } from '@/shared/url';
 
 export default function Options() {
   const [settings, setSettings]           = useState<VaultSettings>(DEFAULT_SETTINGS);
@@ -20,7 +21,7 @@ export default function Options() {
   }
 
   function addDomain() {
-    const domain = domainInput.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    const domain = normalizeDomain(domainInput);
     if (!domain || settings.ignoredDomains.includes(domain)) return;
     setSettings(s => ({ ...s, ignoredDomains: [...s.ignoredDomains, domain] }));
     setDomainInput('');

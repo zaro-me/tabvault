@@ -7,20 +7,25 @@ import type { IdleEntry } from '@/shared/types';
  */
 const activityMap = new Map<number, IdleEntry>();
 
-export function markActive(tabId: number, update: Partial<Omit<IdleEntry, 'tabId'>>): void {
+export function upsert(tabId: number, update: Partial<Omit<IdleEntry, 'tabId'>>): void {
   const existing = activityMap.get(tabId);
   activityMap.set(tabId, {
     tabId,
     url: update.url ?? existing?.url ?? '',
     title: update.title ?? existing?.title ?? '',
     faviconUrl: update.faviconUrl ?? existing?.faviconUrl ?? '',
-    openedAt: existing?.openedAt ?? Date.now(),
-    lastActiveAt: Date.now(),
-    pinned: existing?.pinned ?? false,
+    openedAt: existing?.openedAt ?? update.openedAt ?? Date.now(),
+    lastActiveAt: update.lastActiveAt ?? existing?.lastActiveAt ?? Date.now(),
+    pinned: update.pinned ?? existing?.pinned ?? false,
+    browserPinned: update.browserPinned ?? existing?.browserPinned ?? false,
     // Preserve grace state — user activity handled separately via cancelGrace
     graceStartedAt: existing?.graceStartedAt,
     notificationId: existing?.notificationId,
   });
+}
+
+export function markActive(tabId: number, update: Partial<Omit<IdleEntry, 'tabId'>>): void {
+  upsert(tabId, { ...update, lastActiveAt: Date.now() });
 }
 
 export function removeTab(tabId: number): void {
@@ -41,6 +46,7 @@ export function getIdleTabs(thresholdMs: number): IdleEntry[] {
   return [...activityMap.values()].filter(
     entry =>
       !entry.pinned &&
+      !entry.browserPinned &&
       entry.graceStartedAt === undefined &&
       now - entry.lastActiveAt >= thresholdMs,
   );

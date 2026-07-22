@@ -32,6 +32,22 @@ describe('idle-tracker', () => {
     expect(tracker.getIdleTabs(1_000)).toHaveLength(0);
   });
 
+  it('does not return native browser-pinned tabs as idle', () => {
+    tracker.upsert(1, {
+      url: 'https://x.com', title: 'X', faviconUrl: '', browserPinned: true,
+      lastActiveAt: Date.now() - 999_999,
+    });
+    expect(tracker.getIdleTabs(1_000)).toHaveLength(0);
+  });
+
+  it('updates metadata without resetting activity time', () => {
+    tracker.upsert(1, {
+      url: 'https://x.com', title: 'X', faviconUrl: '', lastActiveAt: 1234,
+    });
+    tracker.upsert(1, { title: 'Updated title' });
+    expect(tracker.getEntry(1)).toMatchObject({ title: 'Updated title', lastActiveAt: 1234 });
+  });
+
   it('does not return grace-period tabs as newly idle', () => {
     tracker.markActive(1, { url: 'https://x.com', title: 'X', faviconUrl: '' });
     tracker.hydrate([{ ...tracker.getEntry(1)!, lastActiveAt: Date.now() - 999_999 }]);

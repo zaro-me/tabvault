@@ -4,6 +4,7 @@ import * as db from '@/shared/storage';
 import { assignGroups, assignNewTab, extractDomain } from '@/shared/grouping';
 import { assignTabWithAI, groupTabsWithAI } from '@/shared/ai-grouping';
 import { detectAIProvider } from '@/shared/ai-provider';
+import { filterNewUrls, isArchivableUrl, isIgnoredUrl } from '@/shared/url';
 import { pickNextColor } from '@/shared/types';
 import type { IdleEntry, StoredTab, TabGroup } from '@/shared/types';
 
@@ -16,26 +17,40 @@ const DASHBOARD_PATH     = 'src/dashboard/index.html';
 // All parkTab calls are chained onto this promise so they execute one at a time.
 
 let parkQueue: Promise<void> = Promise.resolve();
+const pendingParkIds = new Set<number>();
+let idlePersistQueue: Promise<void> = Promise.resolve();
 
-function enqueuePark(entry: IdleEntry): void {
-  parkQueue = parkQueue.then(() => doParkTab(entry)).catch(() => {
-    // Don't let one failure break subsequent parks
-  });
+function enqueuePark(entry: IdleEntry, force = false): void {
+  if (pendingParkIds.has(entry.tabId)) {
+    // A manual archive request must not be swallowed by an older automatic
+    // request that may cancel after noticing recent activity.
+    if (force) parkQueue = parkQueue.then(() => doParkTab(entry, true)).catch(() => undefined);
+    return;
+  }
+  pendingParkIds.add(entry.tabId);
+  parkQueue = parkQueue
+    .then(() => doParkTab(entry, force))
+    .catch(() => undefined)
+    .finally(() => pendingParkIds.delete(entry.tabId));
 }
+
+let trackerReady = hydrateTracker().catch(() => undefined);
 
 // ─── Initialization ───────────────────────────────────────────────────────────
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initAlarm();
   initContextMenu();
-  await hydrateTracker();
+  trackerReady = hydrateTracker();
+  await trackerReady;
   await ensureDashboard();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await initAlarm();
   initContextMenu();   // re-register — menus don't persist across browser restarts in MV3
-  await hydrateTracker();
+  trackerReady = hydrateTracker();
+  await trackerReady;
   await ensureDashboard();
 });
 
@@ -86,8 +101,27 @@ function initContextMenu() {
 }
 
 async function hydrateTracker() {
-  const saved = await db.getIdleMap();
+  const [saved, liveTabs] = await Promise.all([db.getIdleMap(), chrome.tabs.query({})]);
   tracker.hydrate(Object.values(saved));
+
+  const liveIds = new Set(liveTabs.flatMap(tab => tab.id === undefined ? [] : [tab.id]));
+  for (const entry of tracker.getAllEntries()) {
+    if (!liveIds.has(entry.tabId)) tracker.removeTab(entry.tabId);
+  }
+
+  for (const tab of liveTabs) {
+    if (tab.id === undefined) continue;
+    const lastAccessed = (tab as { lastAccessed?: number }).lastAccessed ?? Date.now();
+    tracker.upsert(tab.id, {
+      url: tab.url ?? '',
+      title: tab.title ?? '',
+      faviconUrl: tab.favIconUrl ?? '',
+      openedAt: lastAccessed,
+      lastActiveAt: lastAccessed,
+      browserPinned: !!tab.pinned,
+    });
+  }
+  await persistIdleMap();
 }
 
 async function ensureDashboard() {
@@ -125,12 +159,14 @@ async function focusDashboard() {
 // ─── Tab Lifecycle ────────────────────────────────────────────────────────────
 
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+  await trackerReady;
   try {
     const tab = await chrome.tabs.get(tabId);
     tracker.markActive(tabId, {
       url:        tab.url        ?? '',
       title:      tab.title      ?? '',
       faviconUrl: tab.favIconUrl ?? '',
+      browserPinned: !!tab.pinned,
     });
     // User returned — cancel any pending grace period
     const entry = tracker.getEntry(tabId);
@@ -143,12 +179,17 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' || changeInfo.title) {
-    tracker.markActive(tabId, {
+  await trackerReady;
+  if (changeInfo.status === 'complete' || changeInfo.title || changeInfo.url || changeInfo.pinned !== undefined) {
+    const update = {
       url:        tab.url        ?? '',
       title:      tab.title      ?? '',
       faviconUrl: tab.favIconUrl ?? '',
-    });
+      browserPinned: !!tab.pinned,
+      lastActiveAt: (tab as { lastAccessed?: number }).lastAccessed ?? Date.now(),
+    };
+    if (tab.active) tracker.markActive(tabId, update);
+    else tracker.upsert(tabId, update);
     await persistIdleMap();
   }
 });
@@ -168,8 +209,13 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== HEARTBEAT_ALARM) return;
 
+  await trackerReady;
   await ensureDashboard();
-  const settings = await db.getSettings();
+  const [settings, stored] = await Promise.all([
+    db.getSettings(),
+    chrome.storage.local.get('vaultTabId'),
+  ]);
+  const vaultTabId = stored.vaultTabId as number | undefined;
 
   // Periodic cleanup: remove tracker entries for tabs that no longer exist
   const aliveTabs = await chrome.tabs.query({});
@@ -178,7 +224,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!aliveIds.has(entry.tabId)) tracker.removeTab(entry.tabId);
   }
 
-  const idleTabs = tracker.getIdleTabs(settings.idleThresholdMs);
+  const idleTabs = tracker.getIdleTabs(settings.idleThresholdMs).filter(entry =>
+    entry.tabId !== vaultTabId &&
+    isArchivableUrl(entry.url) &&
+    !isIgnoredUrl(entry.url, settings.ignoredDomains),
+  );
 
   if (settings.notificationsEnabled) {
     // ── Notification mode (opt-in) ────────────────────────────────────────────
@@ -198,6 +248,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     }
     // Archive tabs whose grace period has expired
     for (const entry of tracker.getGracePeriodTabs()) {
+      if (
+        entry.browserPinned || entry.pinned || entry.tabId === vaultTabId ||
+        !isArchivableUrl(entry.url) || isIgnoredUrl(entry.url, settings.ignoredDomains)
+      ) {
+        if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
+        tracker.cancelGrace(entry.tabId);
+        continue;
+      }
       if (tracker.expiredGrace(entry.tabId, settings.gracePeriodMs)) {
         if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
         enqueuePark(entry);
@@ -226,7 +284,7 @@ chrome.notifications.onButtonClicked.addListener(async (notifId, buttonIndex) =>
     tracker.markActive(tabId, {});
   } else {
     const entry = tracker.getEntry(tabId);
-    if (entry) enqueuePark(entry);
+    if (entry) enqueuePark(entry, true);
   }
   await persistIdleMap();
 });
@@ -248,7 +306,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const { id: tabId, title = '', url = '' } = tab;
 
   // Reject system/extension pages for archive; allow for pin actions
-  const isSystemUrl = !url || SYSTEM_PREFIXES.some(p => url.startsWith(p));
+  const isSystemUrl = !isArchivableUrl(url);
 
   if (info.menuItemId === 'tv-pin') {
     // Ensure tab is in the tracker before pinning (may not be tracked if just opened)
@@ -257,6 +315,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         url:        tab.url        ?? '',
         title:      tab.title      ?? '',
         faviconUrl: tab.favIconUrl ?? '',
+        browserPinned: !!tab.pinned,
       });
     }
     tracker.setPinned(tabId, true);
@@ -292,7 +351,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         pinned:       false,
       };
     }
-    enqueuePark(entry);
+    enqueuePark(entry, true);
   }
 });
 
@@ -300,66 +359,142 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'GET_STATUS') {
-    Promise.all([chrome.tabs.query({}), db.getSettings()]).then(([tabs, settings]) => {
-      sendResponse({
+    respond(Promise.all([trackerReady, chrome.tabs.query({}), db.getSettings()]).then(([, tabs, settings]) => ({
+        ok:         true,
         tabs:       tabs.length,
         entries:    tracker.getAllEntries().length,
         graceTabs:  tracker.getGracePeriodTabs().length,
         settings,
-      });
-    });
+    })), sendResponse);
+    return true;
+  }
+
+  if (msg.type === 'GET_TAB_STATUS') {
+    respond(trackerReady.then(async () => {
+      const tabId = msg.tabId as number;
+      const [tab, settings] = await Promise.all([chrome.tabs.get(tabId), db.getSettings()]);
+      const entry = tracker.getEntry(tabId);
+      return {
+        ok: true,
+        pinned: entry?.pinned ?? false,
+        browserPinned: !!tab.pinned,
+        archivable: isArchivableUrl(tab.url ?? '') && !isIgnoredUrl(tab.url ?? '', settings.ignoredDomains),
+      };
+    }), sendResponse);
     return true;
   }
 
   if (msg.type === 'PARK_TAB') {
-    const entry = tracker.getEntry(msg.tabId as number);
-    if (entry) {
-      enqueuePark(entry);
-      sendResponse({ ok: true });
-    } else {
-      sendResponse({ ok: false, error: 'Tab not tracked' });
-    }
+    respond(trackerReady.then(async () => {
+      const tabId = msg.tabId as number;
+      const [tab, settings] = await Promise.all([chrome.tabs.get(tabId), db.getSettings()]);
+      if (!isArchivableUrl(tab.url ?? '')) throw new Error('This browser page cannot be archived');
+      if (isIgnoredUrl(tab.url ?? '', settings.ignoredDomains)) throw new Error('This domain is excluded in TabVault settings');
+
+      let entry = tracker.getEntry(tabId);
+      if (!entry) {
+        const lastAccessed = (tab as { lastAccessed?: number }).lastAccessed ?? Date.now();
+        tracker.upsert(tabId, {
+          url: tab.url ?? '', title: tab.title ?? '', faviconUrl: tab.favIconUrl ?? '',
+          openedAt: lastAccessed, lastActiveAt: lastAccessed, browserPinned: !!tab.pinned,
+        });
+        entry = tracker.getEntry(tabId);
+      }
+      if (!entry) throw new Error('Could not track this tab');
+      enqueuePark(entry, true);
+      await persistIdleMap();
+      return { ok: true };
+    }), sendResponse);
     return true;
   }
 
   if (msg.type === 'SET_PINNED') {
-    tracker.setPinned(msg.tabId as number, msg.pinned as boolean);
-    persistIdleMap().then(() => sendResponse({ ok: true }));
+    respond(trackerReady.then(async () => {
+      const tabId = msg.tabId as number;
+      if (!tracker.getEntry(tabId)) {
+        const tab = await chrome.tabs.get(tabId);
+        const lastAccessed = (tab as { lastAccessed?: number }).lastAccessed ?? Date.now();
+        tracker.upsert(tabId, {
+          url: tab.url ?? '', title: tab.title ?? '', faviconUrl: tab.favIconUrl ?? '',
+          openedAt: lastAccessed, lastActiveAt: lastAccessed, browserPinned: !!tab.pinned,
+        });
+      }
+      tracker.setPinned(tabId, msg.pinned as boolean);
+      await persistIdleMap();
+      return { ok: true };
+    }), sendResponse);
     return true;
   }
 
   if (msg.type === 'OPEN_DASHBOARD') {
-    focusDashboard().then(() => sendResponse({ ok: true }));
+    respond(focusDashboard().then(() => ({ ok: true })), sendResponse);
     return true;
   }
 
   if (msg.type === 'PURGE_ALL') {
-    purgeAll().then(result => sendResponse(result));
+    respond(purgeAll(), sendResponse);
     return true;
   }
 
   if (msg.type === 'SNAPSHOT_ALL') {
-    snapshotAll().then(result => sendResponse(result));
+    respond(snapshotAll(), sendResponse);
     return true;
   }
 });
 
+function respond<T>(promise: Promise<T>, sendResponse: (response: unknown) => void): void {
+  promise
+    .then(sendResponse)
+    .catch((error: unknown) => sendResponse({
+      ok: false,
+      error: error instanceof Error ? error.message : 'TabVault action failed',
+    }));
+}
+
 // ─── Core: Park (serialized via enqueuePark) ──────────────────────────────────
 
-async function doParkTab(entry: IdleEntry): Promise<void> {
+async function doParkTab(entry: IdleEntry, force: boolean): Promise<void> {
+  let browserTab: chrome.tabs.Tab;
+  try {
+    browserTab = await chrome.tabs.get(entry.tabId);
+  } catch {
+    tracker.removeTab(entry.tabId);
+    return;
+  }
+
   const [existingTabs, existingGroups, settings] = await Promise.all([
     db.getAllTabs(),
     db.getAllGroups(),
     db.getSettings(),
   ]);
 
+  const currentEntry = tracker.getEntry(entry.tabId);
+  if (
+    !isArchivableUrl(browserTab.url ?? '') ||
+    isIgnoredUrl(browserTab.url ?? '', settings.ignoredDomains)
+  ) return;
+
+  if (!force && (
+    !currentEntry || browserTab.active || browserTab.pinned ||
+    currentEntry.pinned || currentEntry.browserPinned ||
+    currentEntry.lastActiveAt > entry.lastActiveAt ||
+    currentEntry.url !== entry.url || browserTab.url !== entry.url
+  )) return;
+
+  const sourceEntry: IdleEntry = force ? {
+    ...entry,
+    url: browserTab.url ?? entry.url,
+    title: browserTab.title ?? entry.title,
+    faviconUrl: browserTab.favIconUrl ?? entry.faviconUrl,
+  } : entry;
+
   const newTab: StoredTab = {
     id:           uuidv4(),
-    url:          entry.url,
-    title:        entry.title || entry.url,
-    faviconUrl:   entry.faviconUrl,
-    openedAt:     entry.openedAt,
-    lastActiveAt: entry.lastActiveAt,
+    url:          sourceEntry.url,
+    title:        sourceEntry.title || sourceEntry.url,
+    faviconUrl:   sourceEntry.faviconUrl,
+    openedAt:     sourceEntry.openedAt,
+    lastActiveAt: sourceEntry.lastActiveAt,
     parkedAt:     Date.now(),
     groupId:      '',
     pinned:       false,
@@ -423,6 +558,23 @@ async function doParkTab(entry: IdleEntry): Promise<void> {
 
   const groupLabel = updatedGroups.find(g => g.id === parkedTab.groupId)?.label ?? parkedTab.groupId;
 
+  // AI grouping can take several seconds. Recheck that an automatically parked
+  // tab was not activated, pinned, or navigated while the request was running.
+  if (!force) {
+    try {
+      const latestTab = await chrome.tabs.get(entry.tabId);
+      const latestEntry = tracker.getEntry(entry.tabId);
+      if (
+        !latestEntry || latestTab.active || latestTab.pinned ||
+        latestEntry.pinned || latestEntry.browserPinned ||
+        latestEntry.lastActiveAt > entry.lastActiveAt || latestEntry.url !== entry.url
+      ) return;
+    } catch {
+      tracker.removeTab(entry.tabId);
+      return;
+    }
+  }
+
   await Promise.all([
     db.saveTab(parkedTab),
     ...updatedGroups.map(g => db.saveGroup(g)),
@@ -443,16 +595,15 @@ async function doParkTab(entry: IdleEntry): Promise<void> {
 
 // ─── Purge / Snapshot shared helpers ─────────────────────────────────────────
 
-const SYSTEM_PREFIXES = ['chrome://', 'moz-extension://', 'chrome-extension://', 'about:', 'edge://'];
-
-async function collectCandidateTabs(vaultTabId: number | undefined): Promise<chrome.tabs.Tab[]> {
+async function collectCandidateTabs(vaultTabId: number | undefined, ignoredDomains: string[]): Promise<chrome.tabs.Tab[]> {
   const allChromeTabs = await chrome.tabs.query({});
   return allChromeTabs
     .filter(t =>
       t.id !== undefined &&
       t.id !== vaultTabId &&
       t.url &&
-      !SYSTEM_PREFIXES.some(p => t.url!.startsWith(p)) &&
+       isArchivableUrl(t.url) &&
+       !isIgnoredUrl(t.url, ignoredDomains) &&
       !t.pinned,
     )
     .sort((a, b) => (a.windowId ?? 0) - (b.windowId ?? 0) || (a.index ?? 0) - (b.index ?? 0));
@@ -480,7 +631,7 @@ function applyBrowserGroups(
   const browserGroupMap = new Map<number, number[]>();
   for (let i = 0; i < chromeTabs.length; i++) {
     const gid = (chromeTabs[i] as { groupId?: number }).groupId;
-    if (typeof gid === 'number' && gid > 0) {
+    if (typeof gid === 'number' && gid >= 0) {
       if (!browserGroupMap.has(gid)) browserGroupMap.set(gid, []);
       browserGroupMap.get(gid)!.push(i);
     }
@@ -595,13 +746,21 @@ async function assignUngrouped(
 
 async function purgeAll(): Promise<{ parked: number; groups: number; usedAI: boolean; aiError?: string }> {
   const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
-  const tabsToPurge    = await collectCandidateTabs(vaultTabId as number | undefined);
-  if (tabsToPurge.length === 0) return { parked: 0, groups: 0, usedAI: false };
-
   const now = Date.now();
   const [existingTabs, existingGroups, settings] = await Promise.all([
     db.getAllTabs(), db.getAllGroups(), db.getSettings(),
   ]);
+  const candidateTabs = await collectCandidateTabs(vaultTabId as number | undefined, settings.ignoredDomains);
+  if (candidateTabs.length === 0) return { parked: 0, groups: 0, usedAI: false };
+  const tabsToPurge = filterNewUrls(candidateTabs, existingTabs.map(tab => tab.url));
+
+  if (tabsToPurge.length === 0) {
+    const duplicateIds = candidateTabs.map(tab => tab.id!);
+    await chrome.tabs.remove(duplicateIds);
+    for (const tabId of duplicateIds) tracker.removeTab(tabId);
+    await persistIdleMap();
+    return { parked: candidateTabs.length, groups: 0, usedAI: false };
+  }
 
   const newStoredTabs            = buildStoredTabs(tabsToPurge, now);
   const { preGroups, preAssigned } = applyBrowserGroups(tabsToPurge, newStoredTabs, now);
@@ -614,7 +773,7 @@ async function purgeAll(): Promise<{ parked: number; groups: number; usedAI: boo
     ...finalGroups.map(g => db.saveGroup(g)),
   ]);
 
-  const tabIds = tabsToPurge.map(t => t.id!);
+  const tabIds = candidateTabs.map(t => t.id!);
   try { await chrome.tabs.remove(tabIds); } catch { /* some may already be closed */ }
 
   for (const tabId of tabIds) tracker.removeTab(tabId);
@@ -622,20 +781,20 @@ async function purgeAll(): Promise<{ parked: number; groups: number; usedAI: boo
   chrome.runtime.sendMessage({ type: 'VAULT_UPDATED' }).catch(() => {});
 
   const newGroupCount = finalGroups.length - existingGroups.length;
-  return { parked: tabsToPurge.length, groups: Math.max(0, newGroupCount), usedAI, aiError };
+  return { parked: candidateTabs.length, groups: Math.max(0, newGroupCount), usedAI, aiError };
 }
 
 // ─── Snapshot All ─────────────────────────────────────────────────────────────
 
 async function snapshotAll(): Promise<{ saved: number; groups: number; usedAI: boolean; aiError?: string }> {
   const { vaultTabId } = await chrome.storage.local.get('vaultTabId');
-  const tabsToSnap     = await collectCandidateTabs(vaultTabId as number | undefined);
-  if (tabsToSnap.length === 0) return { saved: 0, groups: 0, usedAI: false };
-
   const now = Date.now();
   const [existingTabs, existingGroups, settings] = await Promise.all([
     db.getAllTabs(), db.getAllGroups(), db.getSettings(),
   ]);
+  const candidates = await collectCandidateTabs(vaultTabId as number | undefined, settings.ignoredDomains);
+  const tabsToSnap = filterNewUrls(candidates, existingTabs.map(tab => tab.url));
+  if (tabsToSnap.length === 0) return { saved: 0, groups: 0, usedAI: false };
 
   const newStoredTabs            = buildStoredTabs(tabsToSnap, now);
   const { preGroups, preAssigned } = applyBrowserGroups(tabsToSnap, newStoredTabs, now);
@@ -659,7 +818,8 @@ async function snapshotAll(): Promise<{ saved: number; groups: number; usedAI: b
 async function persistIdleMap(): Promise<void> {
   const map: Record<number, IdleEntry> = {};
   for (const e of tracker.snapshot()) map[e.tabId] = e;
-  await db.saveIdleMap(map);
+  idlePersistQueue = idlePersistQueue.catch(() => undefined).then(() => db.saveIdleMap(map));
+  await idlePersistQueue;
 }
 
 function truncate(str: string, max: number): string {

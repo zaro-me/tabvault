@@ -6,9 +6,10 @@ import { parseBackupMarkdown } from '@/shared/import';
 import {
   deleteGroup, deleteTab, getAllGroups, getAllTabs,
   saveGroup, saveTab, getGroupOrder, saveGroupOrder,
-  appendLog,
+  appendLog, clearVaultData,
 } from '@/shared/storage';
 import { writeBackup, downloadBackupNow } from '@/shared/backup';
+import { canonicalUrlKey } from '@/shared/url';
 
 const log = (type: Parameters<typeof appendLog>[0]['type'], message: string) =>
   appendLog({ type, message, timestamp: Date.now() }).catch(() => {});
@@ -52,8 +53,40 @@ export function useVault() {
       await saveGroup(uncategorized!);
     }
 
-    setState({ groups: buildGroupViews(tabs, groups, groupOrder), totalTabs: tabs.length, loading: false });
-    writeBackup(tabs, groups).catch(() => {});
+    // Repair redundant group tabIds and stale group-order entries. All rendering
+    // is based on tab.groupId, so this safely heals interrupted older writes.
+    const tabsByGroup = new Map<string, string[]>();
+    for (const tab of tabs) {
+      if (!tabsByGroup.has(tab.groupId)) tabsByGroup.set(tab.groupId, []);
+      tabsByGroup.get(tab.groupId)!.push(tab.id);
+    }
+
+    const liveGroups: TabGroup[] = [];
+    for (const group of groups) {
+      const actualIds = tabsByGroup.get(group.id) ?? [];
+      if (actualIds.length === 0 && !group.manual) {
+        await deleteGroup(group.id);
+        continue;
+      }
+      const actualSet = new Set(actualIds);
+      const orderedIds = [
+        ...group.tabIds.filter((id, index) => actualSet.has(id) && group.tabIds.indexOf(id) === index),
+        ...actualIds.filter(id => !group.tabIds.includes(id)),
+      ];
+      const repaired = arraysEqual(group.tabIds, orderedIds) ? group : { ...group, tabIds: orderedIds };
+      if (repaired !== group) await saveGroup(repaired);
+      liveGroups.push(repaired);
+    }
+
+    const validIds = new Set(liveGroups.map(g => g.id));
+    const cleanOrder = [
+      ...groupOrder.filter((id, index) => validIds.has(id) && groupOrder.indexOf(id) === index),
+      ...liveGroups.map(g => g.id).filter(id => !groupOrder.includes(id)),
+    ];
+    if (!arraysEqual(groupOrder, cleanOrder)) await saveGroupOrder(cleanOrder);
+
+    setState({ groups: buildGroupViews(tabs, liveGroups, cleanOrder), totalTabs: tabs.length, loading: false });
+    writeBackup(tabs, liveGroups).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -182,6 +215,7 @@ export function useVault() {
 
     await Promise.all(groupTabs.map(t => deleteTab(t.id)));
     await deleteGroup(groupId);
+    await removeGroupFromOrder(groupId);
 
     log('delete_group', `Deleted group "${group?.label ?? ''}" (${groupTabs.length} tab${groupTabs.length !== 1 ? 's' : ''})`);
     setUndoEntry({
@@ -198,9 +232,14 @@ export function useVault() {
   const restoreGroup = useCallback(async (groupId: string) => {
     const tabs = await getAllTabs();
     const groupTabs = tabs.filter(t => t.groupId === groupId);
-    await Promise.all(groupTabs.map(t => chrome.tabs.create({ url: t.url, active: false })));
-    await Promise.all(groupTabs.map(t => deleteTab(t.id)));
+    // Open sequentially so very large groups do not overwhelm the browser. A tab
+    // is removed from the vault only after its browser tab was created.
+    for (const tab of groupTabs) {
+      await chrome.tabs.create({ url: tab.url, active: false });
+      await deleteTab(tab.id);
+    }
     await deleteGroup(groupId);
+    await removeGroupFromOrder(groupId);
     await reload();
   }, [reload]);
 
@@ -217,11 +256,17 @@ export function useVault() {
     let targetGroupId = toGroupId;
 
     if (toGroupId === '__new__') {
-      const label    = newGroupLabel?.trim() || 'New group';
-      const newGroup: TabGroup = { id: uuidv4(), label, keywords: [], tabIds: [], createdAt: Date.now(), color: pickNextColor(groups) };
+      const label    = uniqueGroupLabel(newGroupLabel?.trim() || 'New group', groups);
+      const newGroup: TabGroup = { id: uuidv4(), label, keywords: [], tabIds: [], createdAt: Date.now(), color: pickNextColor(groups), manual: true };
       await saveGroup(newGroup);
       targetGroupId = newGroup.id;
+      const order = await getGroupOrder();
+      await saveGroupOrder([...order, newGroup.id]);
     }
+
+    const latestGroups = toGroupId === '__new__' ? await getAllGroups() : groups;
+    const targetGroup  = latestGroups.find(g => g.id === targetGroupId);
+    if (!targetGroup) return;
 
     // Remove from old group (delete group if now empty)
     const oldGroup = groups.find(g => g.id === fromGroupId);
@@ -232,9 +277,7 @@ export function useVault() {
     }
 
     // Add to target group (re-read groups in case a new one was just created above)
-    const latestGroups = toGroupId === '__new__' ? await getAllGroups() : groups;
-    const targetGroup  = latestGroups.find(g => g.id === targetGroupId);
-    if (targetGroup) await saveGroup({ ...targetGroup, tabIds: [...targetGroup.tabIds, tabId] });
+    await saveGroup({ ...targetGroup, tabIds: [...new Set([...targetGroup.tabIds, tabId])] });
 
     await saveTab({ ...tab, groupId: targetGroupId });
 
@@ -306,7 +349,7 @@ export function useVault() {
     const seen     = new Set<string>();
     const toDelete: StoredTab[] = [];
     for (const tab of sorted) {
-      const key = tab.url.trim().toLowerCase();
+      const key = canonicalUrlKey(tab.url);
       if (seen.has(key)) toDelete.push(tab);
       else seen.add(key);
     }
@@ -442,21 +485,15 @@ export function useVault() {
   // ── Bulk actions ─────────────────────────────────────────────────────────────
 
   const purgeAll = useCallback(async (): Promise<{ parked: number; groups: number; usedAI: boolean }> => {
-    return new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'PURGE_ALL' }, (result: { parked: number; groups: number; usedAI: boolean }) => {
-        log('purge', `Purged ${result.parked} tab${result.parked !== 1 ? 's' : ''} into ${result.groups} group${result.groups !== 1 ? 's' : ''}${result.usedAI ? ' (AI-sorted)' : ''}`);
-        resolve(result);
-      });
-    });
+    const result = await sendRuntimeMessage<{ parked: number; groups: number; usedAI: boolean }>({ type: 'PURGE_ALL' });
+    log('purge', `Purged ${result.parked} tab${result.parked !== 1 ? 's' : ''} into ${result.groups} group${result.groups !== 1 ? 's' : ''}${result.usedAI ? ' (AI-sorted)' : ''}`);
+    return result;
   }, []);
 
   const snapshotAll = useCallback(async (): Promise<{ saved: number; groups: number; usedAI: boolean }> => {
-    return new Promise(resolve => {
-      chrome.runtime.sendMessage({ type: 'SNAPSHOT_ALL' }, (result: { saved: number; groups: number; usedAI: boolean }) => {
-        log('snapshot', `Snapshot: ${result.saved} tab${result.saved !== 1 ? 's' : ''} saved into ${result.groups} group${result.groups !== 1 ? 's' : ''}`);
-        resolve(result);
-      });
-    });
+    const result = await sendRuntimeMessage<{ saved: number; groups: number; usedAI: boolean }>({ type: 'SNAPSHOT_ALL' });
+    log('snapshot', `Snapshot: ${result.saved} tab${result.saved !== 1 ? 's' : ''} saved into ${result.groups} group${result.groups !== 1 ? 's' : ''}`);
+    return result;
   }, []);
 
   const downloadBackup = useCallback(async () => {
@@ -475,17 +512,22 @@ export function useVault() {
   }, [reload]);
 
   const clearVault = useCallback(async () => {
-    const [tabs, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
-    await Promise.all([
-      ...tabs.map(t => deleteTab(t.id)),
-      ...groups.map(g => deleteGroup(g.id)),
-    ]);
+    const [tabs, groups, groupOrder] = await Promise.all([getAllTabs(), getAllGroups(), getGroupOrder()]);
+    await clearVaultData();
+    await saveGroupOrder([]);
     log('delete_group', `Cleared vault (${tabs.length} tab${tabs.length !== 1 ? 's' : ''}, ${groups.length} group${groups.length !== 1 ? 's' : ''})`);
+    setUndoEntry({
+      label: `Cleared vault (${tabs.length} tabs)`,
+      restore: async () => {
+        await Promise.all([...groups.map(saveGroup), ...tabs.map(saveTab)]);
+        await saveGroupOrder(groupOrder);
+      },
+    });
     await reload();
   }, [reload]);
 
   const mergeGroups = useCallback(async (sourceGroupId: string, targetGroupId: string) => {
-    const [tabs, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
+    const [tabs, groups, previousOrder] = await Promise.all([getAllTabs(), getAllGroups(), getGroupOrder()]);
     const sourceGroup = groups.find(g => g.id === sourceGroupId);
     const targetGroup = groups.find(g => g.id === targetGroupId);
     if (!sourceGroup || !targetGroup) return;
@@ -494,7 +536,7 @@ export function useVault() {
 
     // Move all source tabs to target group
     await Promise.all(sourceTabs.map(t => saveTab({ ...t, groupId: targetGroupId })));
-    await saveGroup({ ...targetGroup, tabIds: [...targetGroup.tabIds, ...sourceTabs.map(t => t.id)] });
+    await saveGroup({ ...targetGroup, tabIds: [...new Set([...targetGroup.tabIds, ...sourceTabs.map(t => t.id)])] });
     await deleteGroup(sourceGroupId);
 
     // Remove source from group order
@@ -502,6 +544,15 @@ export function useVault() {
     await saveGroupOrder(order.filter(id => id !== sourceGroupId));
 
     log('move_tab', `Merged group "${sourceGroup.label}" into "${targetGroup.label}" (${sourceTabs.length} tab${sourceTabs.length !== 1 ? 's' : ''})`);
+    setUndoEntry({
+      label: `Merged "${sourceGroup.label}" into "${targetGroup.label}"`,
+      restore: async () => {
+        await saveGroup(sourceGroup);
+        await saveGroup(targetGroup);
+        await Promise.all(sourceTabs.map(saveTab));
+        await saveGroupOrder(previousOrder);
+      },
+    });
     await reload();
   }, [reload]);
 
@@ -516,6 +567,31 @@ export function useVault() {
     setGroupColor, clearDuplicates, importTabs,
     clearVault,
   };
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+async function removeGroupFromOrder(groupId: string): Promise<void> {
+  const order = await getGroupOrder();
+  const next = order.filter(id => id !== groupId);
+  if (!arraysEqual(order, next)) await saveGroupOrder(next);
+}
+
+function sendRuntimeMessage<T>(message: object): Promise<T> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response: T & { ok?: boolean; error?: string }) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+      } else if (!response || response.ok === false) {
+        reject(new Error(response?.error || 'TabVault did not respond'));
+      } else {
+        resolve(response);
+      }
+    });
+  });
 }
 
 function buildGroupViews(

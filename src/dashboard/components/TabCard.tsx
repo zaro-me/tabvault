@@ -114,7 +114,7 @@ export function TabCard({ tab, allGroups, onRestore, onDelete, onMove }: Props) 
       </div>
 
       {/* Hover actions */}
-      <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition">
+      <div className="flex items-center gap-0.5 shrink-0 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100 transition">
         <button
           onClick={onRestore}
           title="Restore tab"

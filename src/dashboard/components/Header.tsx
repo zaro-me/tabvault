@@ -53,6 +53,7 @@ export function Header({
   tabCount, search, onSearchChange,
   onPurge, onSnapshot, onDownloadBackup, onClearDuplicates, onImport,
   onCreateGroup,
+  onClearVault, allExpanded, onToggleExpandAll,
   hasApiKey,
 }: HeaderProps) {
   const [purgeState, setPurgeState] = useState<
@@ -65,6 +66,8 @@ export function Header({
   const [importState,  setImportState]  = useState<'idle' | 'reading' | { tabs: number; groups: number } | 'error'>('idle');
   const [folderState,  setFolderState]  = useState<'idle' | 'editing' | 'saving' | { label: string } | 'error'>('idle');
   const [folderName,   setFolderName]   = useState('');
+  const [clearVaultState, setClearVaultState] = useState<'idle' | 'confirm' | 'clearing'>('idle');
+  const [actionError, setActionError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function handleImportClick() {
@@ -102,33 +105,57 @@ export function Header({
   async function handleSnapshot() {
     if (snapState !== 'idle') return;
     setSnapState('snapping');
-    const result = await onSnapshot();
-    setSnapState(result);
-    setTimeout(() => setSnapState('idle'), 4000);
+    setActionError('');
+    try {
+      const result = await onSnapshot();
+      setSnapState(result);
+      setTimeout(() => setSnapState('idle'), 4000);
+    } catch (error) {
+      setSnapState('idle');
+      setActionError(errorMessage(error));
+    }
   }
 
   async function handleDownloadBackup() {
     if (downloading) return;
     setDownloading(true);
-    await onDownloadBackup();
-    setDownloading(false);
+    setActionError('');
+    try {
+      await onDownloadBackup();
+    } catch (error) {
+      setActionError(errorMessage(error));
+    } finally {
+      setDownloading(false);
+    }
   }
 
   async function handleClearDuplicates() {
     if (dedupState === 'running') return;
     setDedupState('running');
-    const removed = await onClearDuplicates();
-    setDedupState(removed);
-    setTimeout(() => setDedupState('idle'), 4000);
+    setActionError('');
+    try {
+      const removed = await onClearDuplicates();
+      setDedupState(removed);
+      setTimeout(() => setDedupState('idle'), 4000);
+    } catch (error) {
+      setDedupState('idle');
+      setActionError(errorMessage(error));
+    }
   }
 
   async function handlePurge() {
     if (purgeState === 'idle')    { setPurgeState('confirm'); return; }
     if (purgeState === 'confirm') {
       setPurgeState('purging');
-      const result = await onPurge();
-      setPurgeState(result);
-      setTimeout(() => setPurgeState('idle'), 4000);
+      setActionError('');
+      try {
+        const result = await onPurge();
+        setPurgeState(result);
+        setTimeout(() => setPurgeState('idle'), 4000);
+      } catch (error) {
+        setPurgeState('idle');
+        setActionError(errorMessage(error));
+      }
     }
   }
 
@@ -144,6 +171,23 @@ export function Header({
     } catch {
       setFolderState('error');
       setTimeout(() => setFolderState('editing'), 2500);
+    }
+  }
+
+  async function handleClearVault() {
+    if (clearVaultState === 'idle') {
+      setClearVaultState('confirm');
+      return;
+    }
+    if (clearVaultState !== 'confirm') return;
+    setClearVaultState('clearing');
+    setActionError('');
+    try {
+      await onClearVault();
+      setClearVaultState('idle');
+    } catch (error) {
+      setClearVaultState('idle');
+      setActionError(errorMessage(error));
     }
   }
 
@@ -266,6 +310,15 @@ export function Header({
               </Tip>
             )}
 
+            <Tip text={allExpanded ? 'Collapse all groups' : 'Expand all groups for full link visibility'}>
+              <button
+                onClick={onToggleExpandAll}
+                className={`${btnBase} bg-slate-800 border-slate-700 text-slate-300 hover:border-indigo-500 hover:text-indigo-300`}
+              >
+                {allExpanded ? '⊟ Collapse All' : '⊞ Expand All'}
+              </button>
+            </Tip>
+
             <Tip text="Captures all currently open tabs and saves them to the Vault without closing them.">
               <button
                 onClick={handleSnapshot}
@@ -345,6 +398,25 @@ export function Header({
               </button>
             </Tip>
 
+            <Tip text="Permanently remove every archived tab and folder. You can undo this from the confirmation toast.">
+              <button
+                onClick={handleClearVault}
+                disabled={clearVaultState === 'clearing' || tabCount === 0}
+                onMouseLeave={() => { if (clearVaultState === 'confirm') setClearVaultState('idle'); }}
+                className={`${btnBase} ${
+                  clearVaultState === 'confirm'
+                    ? 'bg-red-900/40 border-red-600/70 text-red-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-red-600/60 hover:text-red-400'
+                }`}
+              >
+                {clearVaultState === 'confirm'
+                  ? '⚠️ Confirm clear?'
+                  : clearVaultState === 'clearing'
+                  ? 'Clearing…'
+                  : '🗑 Clear Vault'}
+              </button>
+            </Tip>
+
             <Tip text="View a history of Vault activity: backups, purges, deletions, moves, and dismissed alerts.">
               <button
                 onClick={() => setShowLogs(true)}
@@ -355,10 +427,19 @@ export function Header({
             </Tip>
 
           </div>
+          {actionError && (
+            <div role="alert" className="text-xs text-red-300 bg-red-950/50 border border-red-900/60 rounded-lg px-3 py-2">
+              {actionError}
+            </div>
+          )}
         </div>
       </header>
 
       <LogPanel open={showLogs} onClose={() => setShowLogs(false)} />
     </>
   );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'TabVault action failed';
 }

@@ -10,7 +10,7 @@ interface Props {
   onDeleteTab: (tabId: string, groupId: string) => void;
   onRenameGroup: (groupId: string, label: string) => void;
   onDeleteGroup: (groupId: string) => void;
-  onRestoreGroup: (groupId: string) => void;
+  onRestoreGroup: (groupId: string) => Promise<void>;
   onMoveTab: (tabId: string, fromGroupId: string, toGroupId: string, newLabel?: string) => void;
   onSetGroupColor: (groupId: string, color: string) => void;
   onReorderGroups: (newOrder: string[]) => void;
@@ -39,7 +39,7 @@ export function GroupList({
     }
 
     // Build new order: insert dragged group before or after the target
-    const currentOrder = groups.map(g => g.id);
+    const currentOrder = allGroups.map(g => g.id);
     const fromIdx = currentOrder.indexOf(draggedId);
     const toIdx   = currentOrder.indexOf(targetGroupId);
     if (fromIdx === -1 || toIdx === -1) return;

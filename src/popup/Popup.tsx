@@ -7,6 +7,11 @@ interface Status {
   settings: { idleThresholdMs: number; gracePeriodMs: number };
 }
 
+interface ActionResponse {
+  ok?: boolean;
+  error?: string;
+}
+
 export default function Popup() {
   const [status, setStatus]       = useState<Status | null>(null);
   const [currentTab, setCurrentTab] = useState<chrome.tabs.Tab | null>(null);
@@ -14,24 +19,48 @@ export default function Popup() {
   const [parking, setParking]     = useState(false);
   const [purgeStage, setPurgeStage]   = useState<'idle' | 'confirm' | 'purging'>('idle');
   const [snapStage, setSnapStage]     = useState<'idle' | 'snapping'>('idle');
+  const [archivable, setArchivable]   = useState(true);
+  const [browserPinned, setBrowserPinned] = useState(false);
+  const [error, setError]             = useState('');
 
   useEffect(() => {
-    chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (res: Status) => setStatus(res));
+    sendMessage<Status>({ type: 'GET_STATUS' }).then(setStatus).catch(err => setError(err.message));
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-      if (tab) setCurrentTab(tab);
+      if (!tab?.id) return;
+      setCurrentTab(tab);
+      sendMessage<{ pinned: boolean; browserPinned: boolean; archivable: boolean }>({
+        type: 'GET_TAB_STATUS', tabId: tab.id,
+      }).then(result => {
+        setPinned(result.pinned);
+        setBrowserPinned(result.browserPinned);
+        setArchivable(result.archivable);
+      }).catch(err => setError(err.message));
     });
   }, []);
 
-  function parkNow() {
+  async function parkNow() {
     if (!currentTab?.id) return;
+    setError('');
     setParking(true);
-    chrome.runtime.sendMessage({ type: 'PARK_TAB', tabId: currentTab.id }, () => window.close());
+    try {
+      await sendMessage({ type: 'PARK_TAB', tabId: currentTab.id });
+      window.close();
+    } catch (err) {
+      setParking(false);
+      setError(errorMessage(err));
+    }
   }
 
-  function togglePin() {
+  async function togglePin() {
     if (!currentTab?.id) return;
     const next = !pinned;
-    chrome.runtime.sendMessage({ type: 'SET_PINNED', tabId: currentTab.id, pinned: next }, () => setPinned(next));
+    setError('');
+    try {
+      await sendMessage({ type: 'SET_PINNED', tabId: currentTab.id, pinned: next });
+      setPinned(next);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   }
 
   function openDashboard() {
@@ -44,18 +73,32 @@ export default function Popup() {
     window.close();
   }
 
-  function handlePurge() {
+  async function handlePurge() {
     if (purgeStage === 'idle') { setPurgeStage('confirm'); return; }
     if (purgeStage === 'confirm') {
       setPurgeStage('purging');
-      chrome.runtime.sendMessage({ type: 'PURGE_ALL' }, () => window.close());
+      setError('');
+      try {
+        await sendMessage({ type: 'PURGE_ALL' });
+        window.close();
+      } catch (err) {
+        setPurgeStage('idle');
+        setError(errorMessage(err));
+      }
     }
   }
 
-  function handleSnapshot() {
+  async function handleSnapshot() {
     if (snapStage !== 'idle') return;
     setSnapStage('snapping');
-    chrome.runtime.sendMessage({ type: 'SNAPSHOT_ALL' }, () => window.close());
+    setError('');
+    try {
+      await sendMessage({ type: 'SNAPSHOT_ALL' });
+      window.close();
+    } catch (err) {
+      setSnapStage('idle');
+      setError(errorMessage(err));
+    }
   }
 
   const idleHours = status ? (status.settings.idleThresholdMs / 3_600_000).toFixed(1).replace('.0', '') : '2';
@@ -87,15 +130,25 @@ export default function Popup() {
         </div>
       )}
 
+      {error && (
+        <div role="alert" className="bg-red-950/50 border border-red-800/50 rounded-lg px-3 py-2 text-xs text-red-300">
+          {error}
+        </div>
+      )}
+
       {/* Current tab actions */}
       <div className="flex flex-col gap-2">
         <button
           onClick={parkNow}
-          disabled={parking || !currentTab}
+          disabled={parking || !currentTab || !archivable}
           className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg py-2.5 transition"
         >
-          {parking ? 'Archiving…' : '🗄️ Archive this tab now'}
+          {parking ? 'Archiving…' : !archivable ? 'This page cannot be archived' : '🗄️ Archive this tab now'}
         </button>
+
+        {browserPinned && (
+          <p className="text-[11px] text-amber-500/80 text-center">Browser-pinned tabs are always protected.</p>
+        )}
 
         <button
           onClick={togglePin}
@@ -154,4 +207,23 @@ function StatCard({ value, label, color }: { value: number | string; label: stri
       <div className="text-[11px] text-slate-500 mt-0.5">tabs {label}</div>
     </div>
   );
+}
+
+function sendMessage<T extends object = ActionResponse>(message: object): Promise<T> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response: T & ActionResponse) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+      } else if (!response || response.ok === false) {
+        reject(new Error(response?.error || 'TabVault did not respond'));
+      } else {
+        resolve(response);
+      }
+    });
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'TabVault action failed';
 }

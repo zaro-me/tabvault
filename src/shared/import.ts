@@ -36,16 +36,26 @@ export function parseBackupMarkdown(content: string): ParsedGroup[] {
 
     if (!current) continue;
 
-    // Markdown link: - [Title](URL) (anything after closing paren is ignored)
-    const linkMatch = line.match(/^-\s+\[(.+?)\]\((https?:\/\/[^)]+)\)/);
+    // Angle-bracket URL destinations safely support parentheses in URLs.
+    const angleLinkMatch = line.match(/^-\s+\[((?:\\.|[^\]])+)\]\(<((?:https?|file|ftp):\/\/[^>]+)>\)/);
+    if (angleLinkMatch) {
+      current.tabs.push({
+        title: unescapeTitle(angleLinkMatch[1]),
+        url: angleLinkMatch[2].replace(/%3E/gi, '>').trim(),
+      });
+      continue;
+    }
+
+    // Legacy Markdown link: - [Title](URL)
+    const linkMatch = line.match(/^-\s+\[((?:\\.|[^\]])+)\]\(((?:https?|file|ftp):\/\/[^)]+)\)/);
     if (linkMatch) {
-      const title = linkMatch[1].replace(/\\([[\]])/g, '$1').trim(); // unescape \[ \]
+      const title = unescapeTitle(linkMatch[1]);
       current.tabs.push({ title, url: linkMatch[2].trim() });
       continue;
     }
 
     // Plain URL: - https://...
-    const urlMatch = line.match(/^-\s+(https?:\/\/\S+)/);
+    const urlMatch = line.match(/^-\s+((?:https?|file|ftp):\/\/\S+)/);
     if (urlMatch) {
       const url = urlMatch[1].trim();
       current.tabs.push({ title: url, url });
@@ -53,4 +63,8 @@ export function parseBackupMarkdown(content: string): ParsedGroup[] {
   }
 
   return groups.filter(g => g.tabs.length > 0);
+}
+
+function unescapeTitle(title: string): string {
+  return title.replace(/\\([[\]\\])/g, '$1').trim();
 }

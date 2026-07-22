@@ -29,7 +29,8 @@ export interface IdleEntry {
   faviconUrl: string;
   openedAt: number;
   lastActiveAt: number;
-  pinned: boolean;           // permanently exempt from archiving
+  pinned: boolean;           // user exemption set from TabVault
+  browserPinned?: boolean;   // native browser pin; also exempt from archiving
   graceStartedAt?: number;   // set when the countdown notification fires
   notificationId?: string;
 }

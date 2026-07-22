@@ -59,7 +59,7 @@ export function AssistantBanner({ groups, dismissedAlerts, onDismiss }: Props) {
     });
   }
 
-  const staleGroups = groups.filter(g => g.tabs.every(t => now - t.parkedAt >= STALE_MS));
+  const staleGroups = groups.filter(g => g.tabs.length > 0 && g.tabs.every(t => now - t.parkedAt >= STALE_MS));
   if (staleGroups.length > 0) {
     hints.push({
       key: 'stale-groups',
