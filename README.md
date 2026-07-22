@@ -1,6 +1,6 @@
 # TabVault
 
-**TabVault** is a browser extension that turns your tab chaos into a searchable, organized archive. Instead of keeping 80 tabs open "just in case", TabVault watches for idle tabs, parks them silently in the background, and surfaces them in a clean dashboard — grouped by topic, domain, and when you opened them.
+**TabVault** is a browser extension that turns your tab chaos into a searchable, organized archive. Archive tabs when you choose, or opt into automatic idle archiving, then find everything in a clean dashboard grouped by topic.
 
 Your browser stays fast. Nothing gets lost.
 
@@ -16,9 +16,10 @@ TabVault is neither. It's a living archive of things you were actually looking a
 
 ## Features
 
-- **Automatic idle detection** — tabs you haven't touched in a configurable window (default: 2 hours) are parked silently, or after an optional notification countdown
+- **Optional idle archiving** — off by default; enable it with a configurable minute threshold and optional notification countdown
 - **Smart grouping** — three-pass algorithm: domain clustering → TF-IDF cosine similarity on titles/URLs → time proximity fallback
-- **AI grouping** — optional Anthropic or OpenAI API key for smarter semantic grouping
+- **AI grouping and reorganization** — use an optional Anthropic or OpenAI API key to group new tabs or reorganize the entire vault
+- **Flexible restore behavior** — restore one tab or a whole group, and choose whether saved links stay in the vault
 - **Vault dashboard** — pinned tab that always stays open; shows all parked tabs in collapsible group columns
 - **Safety controls** — browser-pinned tabs and ignored domains are never archived automatically
 - **Drag & drop** — move tabs between groups, reorder groups by priority
@@ -89,6 +90,9 @@ Once installed, TabVault pins a **Vault tab** automatically. That tab is your da
 |---|---|
 | Park a tab now | Click the toolbar icon → "Park this tab" |
 | Restore a tab | Click the tab card in the Vault |
+| Restore a tab but keep its saved link | Right-click the tab → "Restore, but keep link in vault" |
+| Restore every tab in a group | Right-click the group header → "Restore all tabs" |
+| Reorganize saved links with AI | Header → "Reorganize with AI" |
 | Move a tab to another group | Drag it, or hover → ⇄ button |
 | Reorder groups | Drag the ⠿ handle on any group header |
 | Delete permanently | Hover a tab card → ✕ |
@@ -101,7 +105,7 @@ Once installed, TabVault pins a **Vault tab** automatically. That tab is your da
 
 ### Optional: AI Grouping
 
-Add an Anthropic or OpenAI API key in **Options** (click the extension icon → Options). TabVault detects the provider from the key format (`sk-ant-...` for Anthropic, `sk-...` for OpenAI). When set, Purge and Snapshot will use AI to group tabs by semantic meaning instead of the built-in TF-IDF algorithm.
+Add an Anthropic or OpenAI API key in **Options** (click the extension icon → Options). TabVault detects the provider from the key format (`sk-ant-...` for Anthropic, `sk-...` for OpenAI). When set, Purge and Snapshot can group new tabs semantically, and **Reorganize with AI** can rebuild the organization of all links already in the vault. AI grouping sends the relevant saved tab titles and URLs to the selected provider.
 
 ---
 

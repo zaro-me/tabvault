@@ -7,7 +7,7 @@ import { DEFAULT_SETTINGS } from './types';
 export type LogEntryType =
   | 'backup' | 'purge' | 'snapshot'
   | 'archive_tab' | 'delete_tab' | 'delete_group' | 'create_group'
-  | 'move_tab' | 'dedup'
+  | 'move_tab' | 'dedup' | 'ai_reorganize'
   | 'alert_dismissed';
 
 export interface LogEntry {
@@ -118,6 +118,20 @@ export async function clearVaultData(): Promise<void> {
   const db = await getDB();
   const tx = db.transaction(['tabs', 'groups'], 'readwrite');
   await Promise.all([tx.objectStore('tabs').clear(), tx.objectStore('groups').clear()]);
+  await tx.done;
+}
+
+/** Atomically replaces all stored tabs and groups with a complete organization snapshot. */
+export async function replaceVaultOrganization(tabs: StoredTab[], groups: TabGroup[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction(['tabs', 'groups'], 'readwrite');
+  const tabStore = tx.objectStore('tabs');
+  const groupStore = tx.objectStore('groups');
+  await Promise.all([tabStore.clear(), groupStore.clear()]);
+  await Promise.all([
+    ...tabs.map(tab => tabStore.put(tab)),
+    ...groups.map(group => groupStore.put(group)),
+  ]);
   await tx.done;
 }
 

@@ -6,6 +6,7 @@ interface Props {
   tab: StoredTab;
   allGroups: GroupView[];
   onRestore: () => void;
+  onRestoreKeep: () => void;
   onDelete: () => void;
   onMove: (toGroupId: string, newLabel?: string) => void;
 }
@@ -26,8 +27,9 @@ function extractDomain(url: string): string {
   catch { return url; }
 }
 
-export function TabCard({ tab, allGroups, onRestore, onDelete, onMove }: Props) {
+export function TabCard({ tab, allGroups, onRestore, onRestoreKeep, onDelete, onMove }: Props) {
   const [showMove, setShowMove] = useState(false);
+  const [showContextMenu, setShowContextMenu] = useState(false);
   const [newGroupLabel, setNewGroupLabel] = useState('');
   const [creatingNew, setCreatingNew] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -79,6 +81,11 @@ export function TabCard({ tab, allGroups, onRestore, onDelete, onMove }: Props) 
       draggable
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
+      onContextMenu={e => {
+        e.preventDefault();
+        setShowMove(false);
+        setShowContextMenu(true);
+      }}
     >
       {/* Favicon */}
       <div className="shrink-0 w-5 h-5 rounded-sm overflow-hidden bg-slate-800 flex items-center justify-center">
@@ -123,7 +130,7 @@ export function TabCard({ tab, allGroups, onRestore, onDelete, onMove }: Props) 
           ↩
         </button>
         <button
-          onClick={() => { setShowMove(m => !m); setCreatingNew(false); setNewGroupLabel(''); }}
+          onClick={() => { setShowMove(m => !m); setShowContextMenu(false); setCreatingNew(false); setNewGroupLabel(''); }}
           title="Move to group"
           className={`text-xs px-1.5 py-1 rounded transition ${showMove ? 'text-indigo-400 bg-indigo-900/40' : 'text-slate-500 hover:text-slate-300 hover:bg-slate-700/40'}`}
         >
@@ -137,6 +144,27 @@ export function TabCard({ tab, allGroups, onRestore, onDelete, onMove }: Props) 
           ✕
         </button>
       </div>
+
+      {/* Right-click restore menu */}
+      {showContextMenu && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setShowContextMenu(false)} />
+          <div className="absolute right-2 top-full mt-1 z-20 bg-slate-800 border border-slate-700 rounded-lg shadow-xl py-1 min-w-[210px]">
+            <button
+              onClick={() => { setShowContextMenu(false); onRestore(); }}
+              className="w-full text-left px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-700 transition"
+            >
+              ↩ Restore
+            </button>
+            <button
+              onClick={() => { setShowContextMenu(false); onRestoreKeep(); }}
+              className="w-full text-left px-3 py-1.5 text-sm text-indigo-300 hover:bg-slate-700 transition"
+            >
+              ↗ Restore, but keep link in vault
+            </button>
+          </div>
+        </>
+      )}
 
       {/* Move dropdown */}
       {showMove && (

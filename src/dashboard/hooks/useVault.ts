@@ -6,10 +6,12 @@ import { parseBackupMarkdown } from '@/shared/import';
 import {
   deleteGroup, deleteTab, getAllGroups, getAllTabs,
   saveGroup, saveTab, getGroupOrder, saveGroupOrder,
-  appendLog, clearVaultData,
+  appendLog, clearVaultData, getSettings, replaceVaultOrganization,
 } from '@/shared/storage';
 import { writeBackup, downloadBackupNow } from '@/shared/backup';
 import { canonicalUrlKey } from '@/shared/url';
+import { groupTabsWithAI } from '@/shared/ai-grouping';
+import { detectAIProvider } from '@/shared/ai-provider';
 
 const log = (type: Parameters<typeof appendLog>[0]['type'], message: string) =>
   appendLog({ type, message, timestamp: Date.now() }).catch(() => {});
@@ -117,8 +119,11 @@ export function useVault() {
 
   // ── Tab actions ─────────────────────────────────────────────────────────────
 
-  const restoreTab = useCallback(async (tab: StoredTab) => {
+  const restoreTab = useCallback(async (tab: StoredTab, keepInVault = false) => {
+    const settings = await getSettings();
     await chrome.tabs.create({ url: tab.url, active: true });
+    if (keepInVault || !settings.removeOnRestore) return;
+
     await deleteTab(tab.id);
     const [remaining, groups] = await Promise.all([getAllTabs(), getAllGroups()]);
     const group = groups.find(g => g.id === tab.groupId);
@@ -229,18 +234,25 @@ export function useVault() {
     await reload();
   }, [reload]);
 
-  const restoreGroup = useCallback(async (groupId: string) => {
-    const tabs = await getAllTabs();
+  const restoreGroup = useCallback(async (groupId: string, keepInVault = false) => {
+    const [tabs, groups, settings] = await Promise.all([getAllTabs(), getAllGroups(), getSettings()]);
     const groupTabs = tabs.filter(t => t.groupId === groupId);
+    const group = groups.find(g => g.id === groupId);
+    const shouldRemove = settings.removeOnRestore && !keepInVault;
     // Open sequentially so very large groups do not overwhelm the browser. A tab
     // is removed from the vault only after its browser tab was created.
     for (const tab of groupTabs) {
       await chrome.tabs.create({ url: tab.url, active: false });
-      await deleteTab(tab.id);
+      if (shouldRemove) await deleteTab(tab.id);
     }
-    await deleteGroup(groupId);
-    await removeGroupFromOrder(groupId);
-    await reload();
+    if (shouldRemove) {
+      if (group?.manual) await saveGroup({ ...group, tabIds: [] });
+      else {
+        await deleteGroup(groupId);
+        await removeGroupFromOrder(groupId);
+      }
+      await reload();
+    }
   }, [reload]);
 
   const moveTab = useCallback(async (
@@ -484,6 +496,66 @@ export function useVault() {
 
   // ── Bulk actions ─────────────────────────────────────────────────────────────
 
+  const reorganizeWithAI = useCallback(async (): Promise<{ tabs: number; groups: number }> => {
+    const [tabs, groups, previousOrder, settings] = await Promise.all([
+      getAllTabs(), getAllGroups(), getGroupOrder(), getSettings(),
+    ]);
+    if (tabs.length === 0) throw new Error('The vault is empty');
+
+    const apiKey = settings.llmApiKey?.trim();
+    if (!apiKey || !detectAIProvider(apiKey)) {
+      throw new Error('Add a valid Anthropic or OpenAI API key in Settings first');
+    }
+
+    const aiResult = await groupTabsWithAI(
+      tabs.map((tab, index) => ({ index, title: tab.title || '', url: tab.url || '' })),
+      apiKey,
+    );
+    if (!aiResult) throw new Error('The AI provider did not return a valid organization');
+
+    // Preserve empty folders the user created manually. Groups containing links
+    // are replaced by the new AI organization.
+    const occupiedGroupIds = new Set(tabs.map(tab => tab.groupId));
+    const preservedFolders = groups.filter(group => group.manual && !occupiedGroupIds.has(group.id));
+    const newGroups: TabGroup[] = [...preservedFolders];
+    const reassignedTabs = [...tabs];
+    const now = Date.now();
+
+    for (const aiGroup of aiResult) {
+      const label = uniqueGroupLabel(aiGroup.label, newGroups);
+      const group: TabGroup = {
+        id: uuidv4(),
+        label,
+        keywords: [],
+        tabIds: aiGroup.tabIndices.map(index => tabs[index].id),
+        createdAt: now,
+        color: pickNextColor(newGroups),
+      };
+      newGroups.push(group);
+      for (const index of aiGroup.tabIndices) {
+        reassignedTabs[index] = { ...tabs[index], groupId: group.id };
+      }
+    }
+
+    const preservedIds = new Set(preservedFolders.map(group => group.id));
+    const aiGroups = newGroups.filter(group => !preservedIds.has(group.id));
+    const nextOrder = [...aiGroups.map(group => group.id), ...preservedFolders.map(group => group.id)];
+    await replaceVaultOrganization(reassignedTabs, newGroups);
+    await saveGroupOrder(nextOrder);
+
+    log('ai_reorganize', `AI reorganized ${tabs.length} tab${tabs.length !== 1 ? 's' : ''} into ${aiGroups.length} group${aiGroups.length !== 1 ? 's' : ''}`);
+    setUndoEntry({
+      label: `AI reorganized ${tabs.length} tabs into ${aiGroups.length} groups`,
+      restore: async () => {
+        await replaceVaultOrganization(tabs, groups);
+        await saveGroupOrder(previousOrder);
+      },
+    });
+
+    await reload();
+    return { tabs: tabs.length, groups: aiGroups.length };
+  }, [reload]);
+
   const purgeAll = useCallback(async (): Promise<{ parked: number; groups: number; usedAI: boolean }> => {
     const result = await sendRuntimeMessage<{ parked: number; groups: number; usedAI: boolean }>({ type: 'PURGE_ALL' });
     log('purge', `Purged ${result.parked} tab${result.parked !== 1 ? 's' : ''} into ${result.groups} group${result.groups !== 1 ? 's' : ''}${result.usedAI ? ' (AI-sorted)' : ''}`);
@@ -563,7 +635,7 @@ export function useVault() {
     restoreTab, deleteTabPermanently,
     renameGroup, deleteGroupWithTabs, restoreGroup,
     createGroup, moveTab, reorderGroups, mergeGroups,
-    purgeAll, snapshotAll, downloadBackup,
+    purgeAll, snapshotAll, downloadBackup, reorganizeWithAI,
     setGroupColor, clearDuplicates, importTabs,
     clearVault,
   };

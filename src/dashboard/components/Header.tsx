@@ -13,6 +13,7 @@ interface HeaderProps {
   onImport: (content: string) => Promise<{ tabs: number; groups: number }>;
   onCreateGroup: (label: string) => Promise<{ label: string }>;
   onClearVault: () => Promise<void>;
+  onReorganizeWithAI: () => Promise<{ tabs: number; groups: number }>;
   allExpanded: boolean;
   onToggleExpandAll: () => void;
   hasApiKey: boolean;
@@ -53,7 +54,7 @@ export function Header({
   tabCount, search, onSearchChange,
   onPurge, onSnapshot, onDownloadBackup, onClearDuplicates, onImport,
   onCreateGroup,
-  onClearVault, allExpanded, onToggleExpandAll,
+  onClearVault, onReorganizeWithAI, allExpanded, onToggleExpandAll,
   hasApiKey,
 }: HeaderProps) {
   const [purgeState, setPurgeState] = useState<
@@ -67,6 +68,9 @@ export function Header({
   const [folderState,  setFolderState]  = useState<'idle' | 'editing' | 'saving' | { label: string } | 'error'>('idle');
   const [folderName,   setFolderName]   = useState('');
   const [clearVaultState, setClearVaultState] = useState<'idle' | 'confirm' | 'clearing'>('idle');
+  const [aiReorganizeState, setAiReorganizeState] = useState<
+    'idle' | 'confirm' | 'running' | { tabs: number; groups: number }
+  >('idle');
   const [actionError, setActionError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -187,6 +191,24 @@ export function Header({
       setClearVaultState('idle');
     } catch (error) {
       setClearVaultState('idle');
+      setActionError(errorMessage(error));
+    }
+  }
+
+  async function handleReorganizeWithAI() {
+    if (aiReorganizeState === 'idle') {
+      setAiReorganizeState('confirm');
+      return;
+    }
+    if (aiReorganizeState !== 'confirm') return;
+    setAiReorganizeState('running');
+    setActionError('');
+    try {
+      const result = await onReorganizeWithAI();
+      setAiReorganizeState(result);
+      setTimeout(() => setAiReorganizeState('idle'), 5000);
+    } catch (error) {
+      setAiReorganizeState('idle');
       setActionError(errorMessage(error));
     }
   }
@@ -395,6 +417,32 @@ export function Header({
                 }`}
               >
                 {purgeLabel()}
+              </button>
+            </Tip>
+
+            <Tip text={hasApiKey
+              ? 'Sends all saved tab titles and URLs to your connected AI provider, then reorganizes the vault. You can undo the result.'
+              : 'Add an Anthropic or OpenAI API key in Settings to enable AI reorganization.'}
+            >
+              <button
+                onClick={handleReorganizeWithAI}
+                disabled={!hasApiKey || tabCount === 0 || aiReorganizeState === 'running'}
+                onMouseLeave={() => { if (aiReorganizeState === 'confirm') setAiReorganizeState('idle'); }}
+                className={`${btnBase} ${
+                  aiReorganizeState === 'confirm'
+                    ? 'bg-violet-900/50 border-violet-500 text-violet-200'
+                    : typeof aiReorganizeState === 'object'
+                    ? 'bg-emerald-900/30 border-emerald-700/60 text-emerald-300'
+                    : 'bg-violet-900/20 border-violet-700/50 text-violet-300 hover:bg-violet-900/40'
+                }`}
+              >
+                {aiReorganizeState === 'confirm'
+                  ? '⚠ Confirm AI reorganization?'
+                  : aiReorganizeState === 'running'
+                  ? 'AI is reorganizing…'
+                  : typeof aiReorganizeState === 'object'
+                  ? `✓ Organized into ${aiReorganizeState.groups} groups`
+                  : '🤖 Reorganize with AI'}
               </button>
             </Tip>
 

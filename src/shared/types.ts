@@ -36,6 +36,8 @@ export interface IdleEntry {
 }
 
 export interface VaultSettings {
+  /** Automatic idle archiving is opt-in. Manual archive actions always remain available. */
+  autoArchiveEnabled: boolean;
   idleThresholdMs: number;
   gracePeriodMs: number;
   ignoredDomains: string[];
@@ -43,16 +45,20 @@ export interface VaultSettings {
   llmApiKey?: string;
   /** @deprecated Migrated to llmApiKey. Kept so older saved settings load cleanly. */
   anthropicApiKey?: string;
-  /** When false (default), tabs are archived silently with no notification or grace period. */
+  /** When false, automatically archived tabs are handled silently with no grace period. */
   notificationsEnabled: boolean;
+  /** When true, a normal restore removes the saved link from the vault. */
+  removeOnRestore: boolean;
 }
 
 export const DEFAULT_SETTINGS: VaultSettings = {
+  autoArchiveEnabled: false,               // automatic idle archiving is opt-in
   idleThresholdMs: 2 * 60 * 60 * 1000,  // 2 hours
   gracePeriodMs: 15 * 60 * 1000,         // 15 minutes
   ignoredDomains: [],
   groupingSensitivity: 'medium',
-  notificationsEnabled: false,            // silent by default — opt-in
+  notificationsEnabled: false,
+  removeOnRestore: true,                   // preserves the existing restore behavior
 };
 
 // Predefined color palette for groups

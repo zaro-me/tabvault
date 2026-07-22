@@ -9,11 +9,11 @@ export type GroupDropAction = 'before' | 'after' | 'merge';
 interface Props {
   group: GroupView;
   allGroups: GroupView[];
-  onRestoreTab: (tab: StoredTab) => void;
+  onRestoreTab: (tab: StoredTab, keepInVault?: boolean) => void;
   onDeleteTab: (tabId: string, groupId: string) => void;
   onRename: (label: string) => void;
   onDelete: () => void;
-  onRestoreAll: () => Promise<void>;
+  onRestoreAll: (keepInVault?: boolean) => Promise<void>;
   onMoveTab: (tabId: string, fromGroupId: string, toGroupId: string, newLabel?: string) => void;
   onSetColor: (color: string) => void;
   onGroupDrop: (targetGroupId: string, action: GroupDropAction) => void;
@@ -39,7 +39,7 @@ export function GroupColumn({
   const [showMenu, setShowMenu]              = useState(false);
   const [showColors, setShowColors]          = useState(false);
   const [confirmDelete, setConfirmDelete]    = useState(false);
-  const [confirmRestore, setConfirmRestore]  = useState(false);
+  const [confirmRestore, setConfirmRestore]  = useState<'default' | 'keep' | null>(null);
   const [restoring, setRestoring]            = useState(false);
   const [restoreError, setRestoreError]      = useState(false);
   const [isDragOver, setIsDragOver]          = useState(false);
@@ -141,15 +141,16 @@ export function GroupColumn({
     setEditing(false);
   }
 
-  async function handleRestoreAll() {
-    if (group.tabs.length > 10 && !confirmRestore) {
-      setConfirmRestore(true);
+  async function handleRestoreAll(keepInVault = false) {
+    const mode = keepInVault ? 'keep' : 'default';
+    if (group.tabs.length > 10 && confirmRestore !== mode) {
+      setConfirmRestore(mode);
       return;
     }
     setRestoring(true);
     setRestoreError(false);
     try {
-      await onRestoreAll();
+      await onRestoreAll(keepInVault);
       setShowMenu(false);
     } catch {
       setRestoring(false);
@@ -194,6 +195,14 @@ export function GroupColumn({
         <div
           className="flex items-center gap-1.5 px-3 py-2.5 bg-slate-800/60 border-b border-slate-700/50 cursor-pointer select-none"
           onClick={() => setCollapsed(c => !c)}
+          onContextMenu={e => {
+            e.preventDefault();
+            setShowMenu(true);
+            setShowColors(false);
+            setConfirmDelete(false);
+            setConfirmRestore(null);
+            setRestoreError(false);
+          }}
           role="button"
           tabIndex={0}
           aria-expanded={!collapsed}
@@ -252,7 +261,7 @@ export function GroupColumn({
           {/* Group menu */}
           <div className="relative shrink-0" onClick={e => e.stopPropagation()}>
             <button
-              onClick={() => { setShowMenu(m => !m); setShowColors(false); setConfirmDelete(false); setConfirmRestore(false); setRestoreError(false); }}
+              onClick={() => { setShowMenu(m => !m); setShowColors(false); setConfirmDelete(false); setConfirmRestore(null); setRestoreError(false); }}
               aria-label={`Actions for ${group.label}`}
               className="text-slate-600 hover:text-slate-300 transition text-sm px-0.5"
             >
@@ -285,7 +294,7 @@ export function GroupColumn({
                   ) : (
                     <>
                       <button
-                        onClick={handleRestoreAll}
+                        onClick={() => handleRestoreAll(false)}
                         disabled={group.tabs.length === 0 || restoring}
                         className={`w-full text-left px-3 py-1.5 text-sm transition ${
                           group.tabs.length === 0
@@ -295,9 +304,22 @@ export function GroupColumn({
                       >
                         {restoring
                           ? 'Opening tabs…'
-                          : confirmRestore
+                          : confirmRestore === 'default'
                           ? `⚠ Open ${group.tabs.length} tabs?`
                           : '↩ Restore all tabs'}
+                      </button>
+                      <button
+                        onClick={() => handleRestoreAll(true)}
+                        disabled={group.tabs.length === 0 || restoring}
+                        className={`w-full text-left px-3 py-1.5 text-sm transition ${
+                          group.tabs.length === 0
+                            ? 'text-slate-600 cursor-not-allowed'
+                            : 'text-indigo-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        {confirmRestore === 'keep'
+                          ? `⚠ Open ${group.tabs.length} and keep links?`
+                          : '↗ Restore all, keep links'}
                       </button>
                       {restoreError && (
                         <p className="px-3 pb-1 text-xs text-red-400">
@@ -360,6 +382,7 @@ export function GroupColumn({
                   tab={tab}
                   allGroups={allGroups}
                   onRestore={() => onRestoreTab(tab)}
+                  onRestoreKeep={() => onRestoreTab(tab, true)}
                   onDelete={() => onDeleteTab(tab.id, tab.groupId)}
                   onMove={(toGroupId, newLabel) => onMoveTab(tab.id, tab.groupId, toGroupId, newLabel)}
                 />

@@ -18,6 +18,7 @@ function renderHeader(overrides: Partial<ComponentProps<typeof Header>> = {}) {
     onImport: vi.fn().mockResolvedValue({ tabs: 0, groups: 0 }),
     onCreateGroup: vi.fn().mockResolvedValue({ label: 'New folder' }),
     onClearVault: vi.fn().mockResolvedValue(undefined),
+    onReorganizeWithAI: vi.fn().mockResolvedValue({ tabs: 12, groups: 3 }),
     allExpanded: false,
     onToggleExpandAll: vi.fn(),
     hasApiKey: false,
@@ -47,5 +48,13 @@ describe('Header everyday controls', () => {
     await userEvent.click(screen.getByRole('button', { name: '📸 Snapshot' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Service worker unavailable');
     expect(screen.getByRole('button', { name: '📸 Snapshot' })).toBeTruthy();
+  });
+
+  it('requires confirmation before reorganizing with AI', async () => {
+    const props = renderHeader({ hasApiKey: true });
+    await userEvent.click(screen.getByRole('button', { name: '🤖 Reorganize with AI' }));
+    expect(props.onReorganizeWithAI).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: '⚠ Confirm AI reorganization?' }));
+    expect(props.onReorganizeWithAI).toHaveBeenCalledOnce();
   });
 });

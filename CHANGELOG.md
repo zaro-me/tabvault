@@ -2,6 +2,19 @@
 
 All notable changes to TabVault are documented here.
 
+## [0.3.0] — 2026-07-21
+
+### Added
+- **Opt-in idle archiving** — automatic idle archiving is off by default and can be enabled with a minute-based threshold
+- **Restore retention preference** — choose whether restored links are removed from or kept in the vault
+- **Keep-link restore actions** — right-click a tab or group to restore without removing saved links
+- **Group right-click menu** — restore all tabs in a group directly from its context menu, with large-group confirmation
+- **Reorganize with AI** — reorganize every saved link using the configured Anthropic or OpenAI provider, with confirmation and Undo
+
+### Changed
+- The popup clearly reports when automatic idle archiving is off
+- Empty dashboard guidance now points users to manual archiving or the opt-in setting
+
 ## [0.2.0] — 2026-07-21
 
 ### Added

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { GroupColumn } from '../GroupColumn';
 import type { GroupView, StoredTab } from '@/shared/types';
@@ -35,5 +35,26 @@ describe('GroupColumn bulk restore', () => {
     expect(onRestoreAll).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '⚠ Open 11 tabs?' }));
     expect(onRestoreAll).toHaveBeenCalledOnce();
+  });
+
+  it('opens group actions on right-click and can keep every link', async () => {
+    const tabs = [makeTab(1), makeTab(2)];
+    const group: GroupView = {
+      id: 'g1', label: 'Saved research', keywords: [], tabIds: tabs.map(tab => tab.id),
+      createdAt: 1, tabs,
+    };
+    const onRestoreAll = vi.fn().mockResolvedValue(undefined);
+    render(
+      <GroupColumn
+        group={group} allGroups={[group]}
+        onRestoreTab={vi.fn()} onDeleteTab={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()}
+        onRestoreAll={onRestoreAll} onMoveTab={vi.fn()} onSetColor={vi.fn()} onGroupDrop={vi.fn()}
+        expandSignal={0} collapseSignal={0} autoExpandTrigger={0}
+      />,
+    );
+
+    fireEvent.contextMenu(screen.getByText('Saved research'));
+    await userEvent.click(screen.getByRole('button', { name: '↗ Restore all, keep links' }));
+    expect(onRestoreAll).toHaveBeenCalledWith(true);
   });
 });

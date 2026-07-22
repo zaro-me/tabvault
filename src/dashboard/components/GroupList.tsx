@@ -6,11 +6,11 @@ import { activeGroupDrag } from '../dragState';
 interface Props {
   groups: GroupView[];
   allGroups: GroupView[];
-  onRestoreTab: (tab: StoredTab) => void;
+  onRestoreTab: (tab: StoredTab, keepInVault?: boolean) => void;
   onDeleteTab: (tabId: string, groupId: string) => void;
   onRenameGroup: (groupId: string, label: string) => void;
   onDeleteGroup: (groupId: string) => void;
-  onRestoreGroup: (groupId: string) => Promise<void>;
+  onRestoreGroup: (groupId: string, keepInVault?: boolean) => Promise<void>;
   onMoveTab: (tabId: string, fromGroupId: string, toGroupId: string, newLabel?: string) => void;
   onSetGroupColor: (groupId: string, color: string) => void;
   onReorderGroups: (newOrder: string[]) => void;
@@ -67,7 +67,7 @@ export function GroupList({
               onDeleteTab={onDeleteTab}
               onRename={label => onRenameGroup(group.id, label)}
               onDelete={() => onDeleteGroup(group.id)}
-              onRestoreAll={() => onRestoreGroup(group.id)}
+              onRestoreAll={keepInVault => onRestoreGroup(group.id, keepInVault)}
               onMoveTab={onMoveTab}
               onSetColor={color => onSetGroupColor(group.id, color)}
               onGroupDrop={handleGroupDrop}

@@ -31,7 +31,7 @@ export default function Options() {
     setSettings(s => ({ ...s, ignoredDomains: s.ignoredDomains.filter(x => x !== d) }));
   }
 
-  const idleHours = settings.idleThresholdMs / 3_600_000;
+  const idleMinutes = Math.round(settings.idleThresholdMs / 60_000);
   const graceMin  = settings.gracePeriodMs  / 60_000;
   const trimmedApiKey = settings.llmApiKey?.trim() ?? '';
   const detectedProvider = detectAIProvider(trimmedApiKey);
@@ -44,14 +44,40 @@ export default function Options() {
       </div>
 
       <div className="flex flex-col gap-5">
-        {/* Notifications */}
+        {/* Automatic idle archiving */}
         <SettingCard
-          label="Archiving mode"
-          hint="Silent mode archives tabs immediately when idle (default). Notification mode shows a countdown and lets you cancel before a tab is closed."
+          label="Automatically archive idle tabs"
+          hint="Off by default. Manual Archive, Snapshot, and Purge actions still work when this is off."
         >
           <div className="flex gap-3">
             {([
-              { value: false, label: 'Silent (default)', desc: 'Archive tabs quietly in the background' },
+              { value: false, label: 'No (default)', desc: 'Only archive when I choose' },
+              { value: true,  label: 'Yes',          desc: 'Archive tabs after the idle time below' },
+            ] as const).map(opt => (
+              <button
+                key={String(opt.value)}
+                onClick={() => setSettings(s => ({ ...s, autoArchiveEnabled: opt.value }))}
+                className={`flex-1 py-2 px-3 rounded-lg text-left text-sm border transition ${
+                  settings.autoArchiveEnabled === opt.value
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                }`}
+              >
+                <div className="font-medium">{opt.label}</div>
+                <div className="text-xs mt-0.5 opacity-70">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </SettingCard>
+
+        {/* Notifications */}
+        <SettingCard
+          label="Archiving mode"
+          hint="When automatic archiving is on, choose whether TabVault archives quietly or warns you first."
+        >
+          <div className="flex gap-3">
+            {([
+              { value: false, label: 'Silent',           desc: 'Archive tabs quietly in the background' },
               { value: true,  label: 'Notify me',        desc: 'Show a countdown before archiving' },
             ] as const).map(opt => (
               <button
@@ -73,7 +99,7 @@ export default function Options() {
         {/* AI / Purge */}
         <SettingCard
           label="LLM API Key"
-          hint={<>Powers AI grouping for Snapshot and Purge. Paste an Anthropic key or OpenAI key; TabVault detects the provider from the key format. Leave blank to use built-in TF-IDF grouping.</>}
+          hint={<>Powers AI grouping for Snapshot, Purge, and Reorganize with AI. These actions send relevant tab titles and URLs to the detected Anthropic or OpenAI provider. Leave blank to use built-in TF-IDF grouping for new tabs.</>}
         >
           <div className="relative">
             <input
@@ -111,21 +137,45 @@ export default function Options() {
 
         {/* Idle threshold */}
         <SettingCard
-          label={<>Idle threshold: <span className="text-indigo-400">{idleHours}h</span></>}
-          hint="How long a tab must be inactive before the grace-period countdown begins."
+          label="Idle time before automatic archive"
+          hint="Choose how many minutes a tab must be inactive. This only applies when automatic archiving is on."
         >
-          <input
-            type="range" min={0.5} max={24} step={0.5} value={idleHours}
-            onChange={e => setSettings(s => ({ ...s, idleThresholdMs: parseFloat(e.target.value) * 3_600_000 }))}
-            className="w-full accent-indigo-500"
-          />
-          <div className="flex justify-between text-xs text-slate-600 mt-1"><span>30 min</span><span>24 h</span></div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={5}
+              max={1440}
+              step={5}
+              value={idleMinutes}
+              onChange={e => {
+                const minutes = Math.min(1440, Math.max(5, Number(e.target.value) || 5));
+                setSettings(s => ({ ...s, idleThresholdMs: minutes * 60_000 }));
+              }}
+              className="w-28 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500 transition"
+            />
+            <span className="text-sm text-slate-400">minutes</span>
+          </div>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {[30, 60, 120, 240].map(minutes => (
+              <button
+                key={minutes}
+                onClick={() => setSettings(s => ({ ...s, idleThresholdMs: minutes * 60_000 }))}
+                className={`px-2.5 py-1 rounded text-xs border transition ${
+                  idleMinutes === minutes
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {minutes < 60 ? `${minutes} min` : `${minutes / 60} hr`}
+              </button>
+            ))}
+          </div>
         </SettingCard>
 
         {/* Grace period */}
         <SettingCard
           label={<>Grace period: <span className="text-indigo-400">{graceMin} min</span></>}
-          hint="Time between the notification and the tab actually being archived."
+          hint="Time between the warning and archiving. Used only when automatic archiving and notifications are both on."
         >
           <input
             type="range" min={1} max={60} step={1} value={graceMin}
@@ -133,6 +183,32 @@ export default function Options() {
             className="w-full accent-indigo-500"
           />
           <div className="flex justify-between text-xs text-slate-600 mt-1"><span>1 min</span><span>60 min</span></div>
+        </SettingCard>
+
+        {/* Restore behavior */}
+        <SettingCard
+          label="After restoring a tab"
+          hint="Choose whether a normal restore removes the saved link. A keep-link command is always available from right-click menus."
+        >
+          <div className="flex gap-3">
+            {([
+              { value: true,  label: 'Remove from vault', desc: 'Restore works like it does today' },
+              { value: false, label: 'Keep in vault',     desc: 'Open tabs without removing saved links' },
+            ] as const).map(opt => (
+              <button
+                key={String(opt.value)}
+                onClick={() => setSettings(s => ({ ...s, removeOnRestore: opt.value }))}
+                className={`flex-1 py-2 px-3 rounded-lg text-left text-sm border transition ${
+                  settings.removeOnRestore === opt.value
+                    ? 'bg-indigo-600 border-indigo-500 text-white'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-600 hover:text-slate-200'
+                }`}
+              >
+                <div className="font-medium">{opt.label}</div>
+                <div className="text-xs mt-0.5 opacity-70">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
         </SettingCard>
 
         {/* Grouping sensitivity */}

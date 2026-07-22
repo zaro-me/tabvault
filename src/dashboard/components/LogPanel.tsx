@@ -17,6 +17,7 @@ const TYPE_ICON: Record<LogEntryType, string> = {
   delete_group:    '🗑️',
   move_tab:        '⇄',
   dedup:           '🗂',
+  ai_reorganize:   '🤖',
   alert_dismissed: '🔕',
 };
 

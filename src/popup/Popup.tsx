@@ -4,7 +4,7 @@ interface Status {
   tabs: number;
   entries: number;
   graceTabs: number;
-  settings: { idleThresholdMs: number; gracePeriodMs: number };
+  settings: { autoArchiveEnabled: boolean; idleThresholdMs: number; gracePeriodMs: number };
 }
 
 interface ActionResponse {
@@ -101,8 +101,11 @@ export default function Popup() {
     }
   }
 
-  const idleHours = status ? (status.settings.idleThresholdMs / 3_600_000).toFixed(1).replace('.0', '') : '2';
+  const idleMinutes = status ? Math.round(status.settings.idleThresholdMs / 60_000) : 120;
   const graceMin  = status ? Math.round(status.settings.gracePeriodMs / 60_000) : 15;
+  const idleLabel = idleMinutes < 60
+    ? `${idleMinutes}m`
+    : `${(idleMinutes / 60).toFixed(1).replace('.0', '')}h`;
 
   return (
     <div className="p-4 flex flex-col gap-3">
@@ -187,7 +190,9 @@ export default function Popup() {
       {/* Footer */}
       <div className="flex items-center justify-between pt-1 border-t border-slate-800">
         <span className="text-[11px] text-slate-600">
-          Idle {idleHours}h · Grace {graceMin}m
+          {status?.settings.autoArchiveEnabled
+            ? `Auto archive: ${idleLabel} idle · ${graceMin}m grace`
+            : 'Automatic idle archiving: Off'}
         </span>
         <button
           onClick={openDashboard}

@@ -13,7 +13,7 @@ export default function App() {
     renameGroup, deleteGroupWithTabs, restoreGroup,
     moveTab, reorderGroups, mergeGroups,
     createGroup,
-    purgeAll, snapshotAll, downloadBackup,
+    purgeAll, snapshotAll, downloadBackup, reorganizeWithAI,
     setGroupColor, clearDuplicates, importTabs,
     clearVault,
     expandGroupSignal,
@@ -59,8 +59,14 @@ export default function App() {
   }, [allExpanded]);
 
   useEffect(() => {
-    getSettings().then(s => setHasApiKey(!!detectAIProvider(s.llmApiKey)));
+    const refreshApiKey = () => getSettings().then(s => setHasApiKey(!!detectAIProvider(s.llmApiKey)));
+    refreshApiKey();
     getDismissedAlerts().then(setDismissedAlerts);
+    const onStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName === 'local' && changes.settings) refreshApiKey();
+    };
+    chrome.storage.onChanged.addListener(onStorageChanged);
+    return () => chrome.storage.onChanged.removeListener(onStorageChanged);
   }, []);
 
   const handleDismissAlert = useCallback((key: string, text: string) => {
@@ -106,6 +112,7 @@ export default function App() {
         onImport={importTabs}
         onCreateGroup={createGroup}
         onClearVault={clearVault}
+        onReorganizeWithAI={reorganizeWithAI}
         allExpanded={allExpanded}
         onToggleExpandAll={handleToggleExpandAll}
         hasApiKey={hasApiKey}
@@ -156,7 +163,7 @@ function EmptyState({ hasSearch }: { hasSearch: boolean }) {
       <p className="text-xl font-medium">
         {hasSearch ? 'No tabs match your search.' : 'Your vault is empty.'}
       </p>
-      {!hasSearch && <p className="text-sm">Idle tabs will appear here automatically.</p>}
+      {!hasSearch && <p className="text-sm">Archive tabs manually, or enable automatic idle archiving in Settings.</p>}
     </div>
   );
 }

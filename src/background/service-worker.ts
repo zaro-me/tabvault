@@ -224,6 +224,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (!aliveIds.has(entry.tabId)) tracker.removeTab(entry.tabId);
   }
 
+  if (!settings.autoArchiveEnabled) {
+    // Turning automatic archiving off also cancels any countdown that was
+    // already underway when the preference changed.
+    for (const entry of tracker.getGracePeriodTabs()) {
+      if (entry.notificationId) chrome.notifications.clear(entry.notificationId);
+      tracker.cancelGrace(entry.tabId);
+    }
+    await persistIdleMap();
+    return;
+  }
+
   const idleTabs = tracker.getIdleTabs(settings.idleThresholdMs).filter(entry =>
     entry.tabId !== vaultTabId &&
     isArchivableUrl(entry.url) &&
@@ -262,7 +273,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       }
     }
   } else {
-    // ── Silent mode (default) ─────────────────────────────────────────────────
+    // ── Silent mode ───────────────────────────────────────────────────────────
     // Archive idle tabs immediately with no notification or grace period
     for (const entry of idleTabs) {
       enqueuePark(entry);
