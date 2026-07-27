@@ -97,4 +97,61 @@ describe('ai-grouping provider routing', () => {
       { index: 0, title: 'Claude Docs', url: 'https://docs.anthropic.com' },
     ], 'sk-ant-test')).rejects.toThrow('ran out of response space');
   });
+
+  it('keeps every tab when Anthropic omits an index from an otherwise valid organization', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stop_reason: 'end_turn',
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            groups: [{ label: 'AI Docs', tabIndices: [0, 2] }],
+          }),
+        }],
+      }),
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await groupTabsWithAI([
+      { index: 0, title: 'Claude Docs', url: 'https://docs.anthropic.com' },
+      { index: 1, title: 'Vite Docs', url: 'https://vite.dev' },
+      { index: 2, title: 'OpenAI Docs', url: 'https://platform.openai.com/docs' },
+    ], 'sk-ant-test');
+
+    expect(result).toEqual([
+      { label: 'AI Docs', tabIndices: [0, 2] },
+      { label: 'Unsorted', tabIndices: [1] },
+    ]);
+  });
+
+  it('uses the first assignment when Anthropic duplicates a tab index', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stop_reason: 'end_turn',
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            groups: [
+              { label: 'AI Docs', tabIndices: [0, 1] },
+              { label: 'Build Tools', tabIndices: [1, 2] },
+            ],
+          }),
+        }],
+      }),
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await groupTabsWithAI([
+      { index: 0, title: 'Claude Docs', url: 'https://docs.anthropic.com' },
+      { index: 1, title: 'OpenAI Docs', url: 'https://platform.openai.com/docs' },
+      { index: 2, title: 'Vite Docs', url: 'https://vite.dev' },
+    ], 'sk-ant-test');
+
+    expect(result).toEqual([
+      { label: 'AI Docs', tabIndices: [0, 1] },
+      { label: 'Build Tools', tabIndices: [2] },
+    ]);
+  });
 });

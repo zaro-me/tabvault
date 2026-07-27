@@ -378,7 +378,10 @@ function parseGroupingResult(text: string, tabCount: number): AIGroup[] | null {
 
     const tabIndices: number[] = [];
     for (const index of group.tabIndices) {
-      if (!Number.isInteger(index) || index < 0 || index >= tabCount || seen.has(index)) return null;
+      // JSON schema guarantees the shape, but it cannot guarantee semantic
+      // constraints such as "every index exactly once". Keep the first valid
+      // assignment rather than rejecting the provider's entire organization.
+      if (!Number.isInteger(index) || index < 0 || index >= tabCount || seen.has(index)) continue;
       seen.add(index);
       tabIndices.push(index);
     }
@@ -386,7 +389,17 @@ function parseGroupingResult(text: string, tabCount: number): AIGroup[] | null {
     if (tabIndices.length > 0) groups.push({ label, tabIndices });
   }
 
-  if (seen.size !== tabCount) return null;
+  const missingIndices = Array.from({ length: tabCount }, (_, index) => index)
+    .filter(index => !seen.has(index));
+  if (missingIndices.length > 0) {
+    const unsorted = groups.find(group => group.label.toLowerCase() === 'unsorted');
+    if (unsorted) {
+      unsorted.tabIndices.push(...missingIndices);
+    } else {
+      groups.push({ label: 'Unsorted', tabIndices: missingIndices });
+    }
+  }
+
   return groups;
 }
 
