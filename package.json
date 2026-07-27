@@ -1,6 +1,6 @@
 {
   "name": "tabvault",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -43,6 +43,7 @@
   },
   "overrides": {
     "adm-zip": "^0.6.0",
+    "brace-expansion": "^5.0.8",
     "shell-quote": "^1.10.0",
     "tmp": "^0.2.7",
     "node-notifier": {

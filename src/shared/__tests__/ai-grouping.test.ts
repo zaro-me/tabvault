@@ -49,8 +49,52 @@ describe('ai-grouping provider routing', () => {
     expect(fetchMock).toHaveBeenCalledWith(
       'https://api.anthropic.com/v1/messages',
       expect.objectContaining({
-        headers: expect.objectContaining({ 'x-api-key': 'sk-ant-test' }),
+        headers: expect.objectContaining({
+          'x-api-key': 'sk-ant-test',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        }),
       }),
     );
+    const request = fetchMock.mock.calls[0][1] as RequestInit;
+    const body = JSON.parse(request.body as string) as {
+      output_config?: { format?: { type?: string; schema?: unknown } };
+    };
+    expect(body.output_config?.format?.type).toBe('json_schema');
+    expect(body.output_config?.format?.schema).toBeTruthy();
+  });
+
+  it('surfaces Anthropic API errors instead of reporting invalid organization', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: { get: () => 'req_test_123' },
+      json: async () => ({
+        type: 'error',
+        error: { type: 'authentication_error', message: 'invalid x-api-key' },
+      }),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(groupTabsWithAI([
+      { index: 0, title: 'Claude Docs', url: 'https://docs.anthropic.com' },
+    ], 'sk-ant-test')).rejects.toThrow(
+      'Anthropic Claude API error 401: invalid x-api-key [request req_test_123]',
+    );
+  });
+
+  it('reports a truncated Anthropic organization', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        stop_reason: 'max_tokens',
+        content: [{ type: 'text', text: '{"groups": [' }],
+      }),
+    } as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(groupTabsWithAI([
+      { index: 0, title: 'Claude Docs', url: 'https://docs.anthropic.com' },
+    ], 'sk-ant-test')).rejects.toThrow('ran out of response space');
   });
 });

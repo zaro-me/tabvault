@@ -108,13 +108,17 @@ export async function groupTabsWithAI(
 
   const prompt = buildGroupingPrompt(tabs);
   const text = await requestAIText(provider, apiKey, prompt, {
-    maxTokens: 4096,
+    maxTokens: 8192,
     schemaName: 'tab_groups',
     schema: GROUPING_SCHEMA,
   });
-  if (!text) return null;
+  if (!text) throw new Error(`${providerLabel(provider)} returned an empty response`);
 
-  return parseGroupingResult(text, tabs.length);
+  const result = parseGroupingResult(text, tabs.length);
+  if (!result) {
+    throw new Error(`${providerLabel(provider)} returned an invalid tab organization. Please try again.`);
+  }
+  return result;
 }
 
 function buildAssignmentPrompt(tab: AITabInput, groups: AIGroupSummary[]): string {
@@ -189,7 +193,7 @@ async function requestAIText(
   options: { maxTokens: number; schemaName: string; schema: JsonObject },
 ): Promise<string | null> {
   if (provider === 'anthropic') {
-    return requestAnthropicText(apiKey, prompt, options.maxTokens);
+    return requestAnthropicText(apiKey, prompt, options);
   }
 
   return requestOpenAIText(apiKey, prompt, options);
@@ -198,7 +202,7 @@ async function requestAIText(
 async function requestAnthropicText(
   apiKey: string,
   prompt: string,
-  maxTokens: number,
+  options: { maxTokens: number; schemaName: string; schema: JsonObject },
 ): Promise<string | null> {
   let response: Response;
   try {
@@ -208,27 +212,33 @@ async function requestAnthropicText(
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
+        // Anthropic requires this opt-in header for calls made directly from
+        // browser and extension contexts.
+        'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
         model: ANTHROPIC_MODEL,
-        max_tokens: maxTokens,
+        max_tokens: options.maxTokens,
         messages: [{
           role: 'user',
           content: prompt,
         }],
+        output_config: {
+          format: {
+            type: 'json_schema',
+            schema: options.schema,
+          },
+        },
       }),
     });
-  } catch {
-    return null;
+  } catch (error) {
+    throw connectionError('Anthropic Claude', error);
   }
 
-  if (!response.ok) return null;
-
-  try {
-    return extractAnthropicText(await response.json());
-  } catch {
-    return null;
-  }
+  const data = await readResponseJson(response, 'Anthropic Claude');
+  if (!response.ok) throw apiResponseError('Anthropic Claude', response, data);
+  assertCompleteAnthropicResponse(data);
+  return extractAnthropicText(data);
 }
 
 async function requestOpenAIText(
@@ -258,17 +268,55 @@ async function requestOpenAIText(
         },
       }),
     });
-  } catch {
-    return null;
+  } catch (error) {
+    throw connectionError('OpenAI', error);
   }
 
-  if (!response.ok) return null;
+  const data = await readResponseJson(response, 'OpenAI');
+  if (!response.ok) throw apiResponseError('OpenAI', response, data);
+  return extractOpenAIText(data);
+}
 
+async function readResponseJson(response: Response, provider: string): Promise<unknown> {
   try {
-    return extractOpenAIText(await response.json());
+    return await response.json();
   } catch {
-    return null;
+    throw new Error(`${provider} returned a response that TabVault could not read`);
   }
+}
+
+function connectionError(provider: string, error: unknown): Error {
+  const detail = error instanceof Error && error.message ? ` (${error.message})` : '';
+  return new Error(`Could not reach ${provider}. Check your connection and try again${detail}`);
+}
+
+function apiResponseError(provider: string, response: Response, data: unknown): Error {
+  const message = extractApiErrorMessage(data) ?? response.statusText ?? 'Request failed';
+  const requestId = response.headers?.get?.('request-id');
+  const requestSuffix = requestId ? ` [request ${requestId}]` : '';
+  return new Error(`${provider} API error ${response.status}: ${message}${requestSuffix}`);
+}
+
+function extractApiErrorMessage(data: unknown): string | null {
+  if (!isRecord(data)) return null;
+  const error = data.error;
+  if (isRecord(error) && typeof error.message === 'string') return error.message;
+  if (typeof data.message === 'string') return data.message;
+  return null;
+}
+
+function assertCompleteAnthropicResponse(data: unknown): void {
+  if (!isRecord(data)) return;
+  if (data.stop_reason === 'max_tokens' || data.stop_reason === 'model_context_window_exceeded') {
+    throw new Error('Anthropic Claude ran out of response space before finishing the organization. Try again with fewer saved tabs.');
+  }
+  if (data.stop_reason === 'refusal') {
+    throw new Error('Anthropic Claude declined to organize these tabs');
+  }
+}
+
+function providerLabel(provider: AIProvider): string {
+  return provider === 'anthropic' ? 'Anthropic Claude' : 'OpenAI';
 }
 
 function extractAnthropicText(data: unknown): string | null {

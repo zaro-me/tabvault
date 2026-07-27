@@ -2,6 +2,15 @@
 
 All notable changes to TabVault are documented here.
 
+## [0.3.1] — 2026-07-27
+
+### Fixed
+- Anthropic requests from Chrome and Firefox now include the required direct-browser-access header
+- Anthropic grouping now uses structured JSON output so Reorganize with AI receives a schema-valid organization
+- AI provider errors now identify authentication, billing, permission, rate-limit, network, refusal, and truncated-response failures instead of showing a generic invalid-organization message
+- Increased bulk-grouping response capacity for larger vaults
+- Patched the newly disclosed `brace-expansion` build dependency vulnerability
+
 ## [0.3.0] — 2026-07-21
 
 ### Added
