@@ -9,7 +9,7 @@ import {
   appendLog, clearVaultData, getSettings, replaceVaultOrganization,
 } from '@/shared/storage';
 import { writeBackup, downloadBackupNow } from '@/shared/backup';
-import { canonicalUrlKey } from '@/shared/url';
+import { planDuplicateRemoval, type DuplicateCleanupResult } from '@/shared/duplicates';
 import { groupTabsWithAI } from '@/shared/ai-grouping';
 import { detectAIProvider } from '@/shared/ai-provider';
 
@@ -340,7 +340,7 @@ export function useVault() {
 
   // ── Dedup ────────────────────────────────────────────────────────────────────
 
-  const clearDuplicates = useCallback(async (): Promise<number> => {
+  const clearDuplicates = useCallback(async (confirmGoogleDocs = false): Promise<DuplicateCleanupResult> => {
     const [tabs, groups, groupOrder] = await Promise.all([getAllTabs(), getAllGroups(), getGroupOrder()]);
 
     // Build priority map: lower index = higher priority (kept over dupes)
@@ -358,15 +358,17 @@ export function useVault() {
       return b.parkedAt - a.parkedAt;
     });
 
-    const seen     = new Set<string>();
-    const toDelete: StoredTab[] = [];
-    for (const tab of sorted) {
-      const key = canonicalUrlKey(tab.url);
-      if (seen.has(key)) toDelete.push(tab);
-      else seen.add(key);
+    const plan = planDuplicateRemoval(sorted);
+    if (plan.googleDocsCandidates.length > 0 && !confirmGoogleDocs) {
+      return { removed: 0, googleDocsCandidates: plan.googleDocsCandidates };
     }
 
-    if (toDelete.length === 0) return 0;
+    const toDelete = [
+      ...plan.exactDuplicates,
+      ...(confirmGoogleDocs ? plan.googleDocsCandidates.map(candidate => candidate.remove) : []),
+    ];
+
+    if (toDelete.length === 0) return { removed: 0, googleDocsCandidates: [] };
 
     log('dedup', `Removed ${toDelete.length} duplicate${toDelete.length !== 1 ? 's' : ''}`);
 
@@ -405,7 +407,7 @@ export function useVault() {
     await Promise.all(groups.filter(g => !g.manual && !occupied.has(g.id)).map(g => deleteGroup(g.id)));
 
     await reload();
-    return toDelete.length;
+    return { removed: toDelete.length, googleDocsCandidates: [] };
   }, [reload]);
 
   // ── Import ───────────────────────────────────────────────────────────────────

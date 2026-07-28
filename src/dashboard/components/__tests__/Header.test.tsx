@@ -14,7 +14,7 @@ function renderHeader(overrides: Partial<ComponentProps<typeof Header>> = {}) {
     onPurge: vi.fn().mockResolvedValue({ parked: 0, groups: 0, usedAI: false }),
     onSnapshot: vi.fn().mockResolvedValue({ saved: 0, groups: 0, usedAI: false }),
     onDownloadBackup: vi.fn().mockResolvedValue(undefined),
-    onClearDuplicates: vi.fn().mockResolvedValue(0),
+    onClearDuplicates: vi.fn().mockResolvedValue({ removed: 0, googleDocsCandidates: [] }),
     onImport: vi.fn().mockResolvedValue({ tabs: 0, groups: 0 }),
     onCreateGroup: vi.fn().mockResolvedValue({ label: 'New folder' }),
     onClearVault: vi.fn().mockResolvedValue(undefined),
@@ -56,5 +56,38 @@ describe('Header everyday controls', () => {
     expect(props.onReorganizeWithAI).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: '⚠ Confirm AI reorganization?' }));
     expect(props.onReorganizeWithAI).toHaveBeenCalledOnce();
+  });
+
+  it('shows Google Docs duplicate locations for review before removing them', async () => {
+    const keep = {
+      id: 'keep',
+      title: 'Quarterly deck — opening slide',
+      url: 'https://docs.google.com/presentation/d/deck-id/edit?slide=id.p#slide=id.p',
+      faviconUrl: '', openedAt: 1, lastActiveAt: 1, parkedAt: 2, groupId: 'group-1', pinned: false as const,
+    };
+    const remove = {
+      ...keep,
+      id: 'remove',
+      title: 'Quarterly deck — roadmap slide',
+      url: 'https://docs.google.com/presentation/d/deck-id/edit?slide=id.roadmap#slide=id.roadmap',
+      parkedAt: 1,
+    };
+    const onClearDuplicates = vi.fn()
+      .mockResolvedValueOnce({
+        removed: 0,
+        googleDocsCandidates: [{ keep, remove }],
+      })
+      .mockResolvedValueOnce({ removed: 1, googleDocsCandidates: [] });
+    renderHeader({ onClearDuplicates });
+
+    await userEvent.click(screen.getByRole('button', { name: '🗂 Clear dupes' }));
+
+    expect(await screen.findByRole('dialog', { name: 'Review Google Docs duplicates' })).toBeTruthy();
+    expect(screen.getByText('Quarterly deck — opening slide')).toBeTruthy();
+    expect(screen.getByText('Quarterly deck — roadmap slide')).toBeTruthy();
+    expect(onClearDuplicates).toHaveBeenCalledWith(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Remove 1 duplicate' }));
+    expect(onClearDuplicates).toHaveBeenLastCalledWith(true);
   });
 });

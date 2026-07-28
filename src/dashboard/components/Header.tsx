@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { LogPanel } from './LogPanel';
 import type { ReactNode } from 'react';
+import type { DuplicateCleanupResult, GoogleDocsDuplicateCandidate } from '@/shared/duplicates';
 
 interface HeaderProps {
   tabCount: number;
@@ -9,7 +10,7 @@ interface HeaderProps {
   onPurge: () => Promise<{ parked: number; groups: number; usedAI: boolean }>;
   onSnapshot: () => Promise<{ saved: number; groups: number; usedAI: boolean }>;
   onDownloadBackup: () => Promise<void>;
-  onClearDuplicates: () => Promise<number>;
+  onClearDuplicates: (confirmGoogleDocs?: boolean) => Promise<DuplicateCleanupResult>;
   onImport: (content: string) => Promise<{ tabs: number; groups: number }>;
   onCreateGroup: (label: string) => Promise<{ label: string }>;
   onClearVault: () => Promise<void>;
@@ -63,6 +64,7 @@ export function Header({
   const [snapState,    setSnapState]    = useState<'idle' | 'snapping' | { saved: number; groups: number }>('idle');
   const [downloading,  setDownloading]  = useState(false);
   const [dedupState,   setDedupState]   = useState<'idle' | 'running' | number>('idle');
+  const [googleDocsCandidates, setGoogleDocsCandidates] = useState<GoogleDocsDuplicateCandidate[]>([]);
   const [showLogs,     setShowLogs]     = useState(false);
   const [importState,  setImportState]  = useState<'idle' | 'reading' | { tabs: number; groups: number } | 'error'>('idle');
   const [folderState,  setFolderState]  = useState<'idle' | 'editing' | 'saving' | { label: string } | 'error'>('idle');
@@ -133,13 +135,19 @@ export function Header({
     }
   }
 
-  async function handleClearDuplicates() {
+  async function handleClearDuplicates(confirmGoogleDocs = false) {
     if (dedupState === 'running') return;
     setDedupState('running');
     setActionError('');
     try {
-      const removed = await onClearDuplicates();
-      setDedupState(removed);
+      const result = await onClearDuplicates(confirmGoogleDocs);
+      if (result.googleDocsCandidates.length > 0) {
+        setGoogleDocsCandidates(result.googleDocsCandidates);
+        setDedupState('idle');
+        return;
+      }
+      setGoogleDocsCandidates([]);
+      setDedupState(result.removed);
       setTimeout(() => setDedupState('idle'), 4000);
     } catch (error) {
       setDedupState('idle');
@@ -381,9 +389,9 @@ export function Header({
               </button>
             </Tip>
 
-            <Tip text="Scans for duplicate URLs across all groups and removes extras. Group order determines which copy is kept.">
+            <Tip text="Scans for duplicate URLs across all groups. Google Docs locations are shown for review before removal. Group order determines which copy is kept.">
               <button
-                onClick={handleClearDuplicates}
+                onClick={() => handleClearDuplicates(false)}
                 disabled={dedupState === 'running'}
                 className={`${btnBase} ${
                   typeof dedupState === 'number'
@@ -482,6 +490,67 @@ export function Header({
           )}
         </div>
       </header>
+
+      {googleDocsCandidates.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-6">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="google-docs-duplicates-title"
+            className="w-full max-w-3xl max-h-[80vh] overflow-y-auto rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <h2 id="google-docs-duplicates-title" className="text-lg font-semibold text-white">
+              Review Google Docs duplicates
+            </h2>
+            <p className="mt-1 text-sm text-slate-400">
+              These links open different locations in the same Google document. Check them before removing the lower-priority copies.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              {googleDocsCandidates.map(candidate => (
+                <div key={candidate.remove.id} className="rounded-lg border border-slate-700 bg-slate-800/70 p-3 text-sm">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-emerald-400">Keep</div>
+                      <a href={candidate.keep.url} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200 hover:underline">
+                        {candidate.keep.title || candidate.keep.url}
+                      </a>
+                      <div className="mt-1 break-all text-xs text-slate-500">{candidate.keep.url}</div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-amber-400">Remove</div>
+                      <a href={candidate.remove.url} target="_blank" rel="noreferrer" className="text-indigo-300 hover:text-indigo-200 hover:underline">
+                        {candidate.remove.title || candidate.remove.url}
+                      </a>
+                      <div className="mt-1 break-all text-xs text-slate-500">{candidate.remove.url}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setGoogleDocsCandidates([])}
+                className="rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleClearDuplicates(true)}
+                disabled={dedupState === 'running'}
+                className="rounded-lg border border-amber-600/70 bg-amber-900/30 px-3 py-2 text-sm font-medium text-amber-200 hover:bg-amber-900/50 disabled:opacity-50"
+              >
+                {dedupState === 'running'
+                  ? 'Removing…'
+                  : `Remove ${googleDocsCandidates.length} duplicate${googleDocsCandidates.length !== 1 ? 's' : ''}`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       <LogPanel open={showLogs} onClose={() => setShowLogs(false)} />
     </>
